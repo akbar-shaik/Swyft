@@ -62,7 +62,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download Project Archive
+      - name: Fetch Uploaded Web Studio Archive
         if: ${{ inputs.archive_url != '' }}
         env:
           INPUT_ARCHIVE_URL: ${{ inputs.archive_url }}
@@ -104,15 +104,15 @@ jobs:
           TARGET_DIR="${INPUT_PROJECT_PATH:-.}"
           cd "$TARGET_DIR"
 
-          WORKSPACE_FILE=$(find . -maxdepth 2 -name "*.xcworkspace" ! -name "project.xcworkspace" | head -n 1 || true)
-          PROJECT_FILE=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1 || true)
+          WORKSPACE_FILE=$(find . -maxdepth 3 -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1 || true)
+          PROJECT_FILE=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n 1 || true)
 
           if [ -n "$WORKSPACE_FILE" ]; then
             CONTAINER_TYPE="-workspace"; CONTAINER_PATH="$WORKSPACE_FILE"
           elif [ -n "$PROJECT_FILE" ]; then
             CONTAINER_TYPE="-project"; CONTAINER_PATH="$PROJECT_FILE"
           else
-            echo "::error::No .xcworkspace or .xcodeproj found"; exit 1
+            echo "::error::No .xcworkspace or .xcodeproj found in project"; exit 1
           fi
 
           SCHEME="$INPUT_SCHEME"
@@ -121,7 +121,7 @@ jobs:
             SCHEME=$(printf '%s' "$LIST_JSON" | jq -r '(.workspace.schemes[0] // .project.schemes[0] // .project.targets[0]) // empty')
           fi
 
-          [ -n "$SCHEME" ] || { echo "::error::Could not determine scheme"; exit 1; }
+          [ -n "$SCHEME" ] || { echo "::error::Unable to auto-detect scheme"; exit 1; }
 
           {
             echo "scheme=$SCHEME"
@@ -235,12 +235,28 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "ipa_path=$OUTPUT_IPA" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Unsigned IPA & Metadata
+      - name: Capture Failure Diagnostics
+        if: ${{ failure() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP"
+          ERRORS=""
+          if [ -f "$RUNNER_TEMP/build.log" ]; then
+            ERRORS=$(grep -E "(error:|fatal error:|::error::)" "$RUNNER_TEMP/build.log" | tail -n 50 || true)
+          fi
+          jq -n \
+            --arg status "failed" \
+            --arg compilerErrors "$ERRORS" \
+            '{status: $status, compilerErrors: $compilerErrors}' > "$RUNNER_TEMP/build-info.json"
+
+      - name: Upload Build Artifacts & Logs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: cloudipa-artifact-${{ inputs.request_id }}
           path: |
-            ${{ steps.package.outputs.ipa_path }}
+            ${{ runner.temp }}/*.ipa
             ${{ runner.temp }}/build-info.json
             ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
           retention-days: 7

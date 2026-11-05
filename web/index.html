@@ -3,130 +3,103 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CloudIPA — Web-Based iOS Cloud Build Studio</title>
-  <meta name="description" content="Select an iOS project folder and compile into an unsigned .ipa package using GitHub-hosted macOS runners. Zero local Mac or Xcode required.">
+  <title>CloudIPA — Cloud iOS Engine for Unsigned .IPA</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300f0ff' stroke-width='2'><path d='M12 2L2 7l10 5 10-5-10-5z'/><path d='M2 17l10 5 10-5'/><path d='M2 12l10 5 10-5'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- JSZip for in-browser directory compression -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
       --bg-dark: #07090e;
-      --card-bg: rgba(18, 23, 38, 0.7);
-      --card-border: rgba(255, 255, 255, 0.08);
-      --card-border-glow: rgba(0, 240, 255, 0.35);
+      --card-bg: rgba(18, 24, 38, 0.7);
+      --card-border-glow: rgba(0, 240, 255, 0.15);
       --accent-cyan: #00f0ff;
-      --accent-purple: #9d4edd;
-      --accent-blue: #3a86ff;
-      --accent-green: #10b981;
-      --text-main: #f0f4fc;
-      --text-muted: #8b9bb4;
-      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
+      --accent-purple: #7928ca;
+      --accent-pink: #ff007a;
+      --accent-green: #00ff88;
+      --accent-red: #ff3366;
+      --text-main: #f0f4f8;
+      --text-muted: #8a99ad;
+      --mono-font: 'JetBrains Mono', monospace;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
     body {
       background-color: var(--bg-dark);
       color: var(--text-main);
-      font-family: var(--font-sans);
-      min-height: 100vh;
+      font-family: 'Plus Jakarta Sans', sans-serif;
       overflow-x: hidden;
       line-height: 1.6;
+      position: relative;
     }
 
-    /* Ambient Spatial Background */
-    .spatial-bg {
+    /* Subtle background grid & glows */
+    body::before {
+      content: '';
       position: fixed;
-      inset: 0;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: radial-gradient(circle at 50% 10%, rgba(121, 40, 202, 0.12) 0%, transparent 60%),
+                  radial-gradient(circle at 85% 70%, rgba(0, 240, 255, 0.08) 0%, transparent 50%);
       pointer-events: none;
-      z-index: 0;
-      overflow: hidden;
-    }
-
-    .glow-orb-1 {
-      position: absolute;
-      top: -150px;
-      left: 15%;
-      width: 650px;
-      height: 650px;
-      background: radial-gradient(circle, rgba(0, 240, 255, 0.18) 0%, rgba(58, 134, 255, 0.05) 50%, transparent 70%);
-      filter: blur(80px);
-      animation: floatOrb 20s ease-in-out infinite alternate;
-    }
-
-    .glow-orb-2 {
-      position: absolute;
-      top: 40%;
-      right: -120px;
-      width: 750px;
-      height: 750px;
-      background: radial-gradient(circle, rgba(157, 78, 221, 0.18) 0%, rgba(255, 0, 110, 0.05) 50%, transparent 70%);
-      filter: blur(90px);
-      animation: floatOrb 24s ease-in-out infinite alternate-reverse;
-    }
-
-    .grid-mesh {
-      position: absolute;
-      inset: 0;
-      background-image: 
-        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-      background-size: 60px 60px;
-      mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, transparent 80%);
-      -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, transparent 80%);
-    }
-
-    @keyframes floatOrb {
-      0% { transform: translate(0, 0) scale(1); }
-      100% { transform: translate(70px, 50px) scale(1.12); }
+      z-index: -1;
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1100px;
       margin: 0 auto;
       padding: 0 24px;
-      position: relative;
-      z-index: 1;
     }
 
     /* Navbar */
-    nav {
+    header {
+      padding: 24px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-content {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 32px 0 20px;
     }
 
-    .brand {
+    .logo-container {
       display: flex;
       align-items: center;
       gap: 12px;
       text-decoration: none;
-      color: var(--text-main);
-      font-weight: 800;
-      font-size: 1.35rem;
-      letter-spacing: -0.5px;
+      color: #fff;
     }
 
-    .brand-icon {
-      width: 42px;
-      height: 42px;
-      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+    .logo-badge {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
       border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 8px 24px rgba(0, 240, 255, 0.35);
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.4);
+    }
+
+    .logo-text {
+      font-size: 1.4rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
     }
 
     .badge-pill {
       background: rgba(0, 240, 255, 0.1);
       border: 1px solid rgba(0, 240, 255, 0.3);
       color: var(--accent-cyan);
-      padding: 6px 14px;
-      border-radius: 999px;
+      padding: 4px 12px;
+      border-radius: 9999px;
       font-size: 0.8rem;
       font-weight: 600;
       display: inline-flex;
@@ -182,6 +155,64 @@
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       position: relative;
+    }
+
+    /* Clean Passwordless Auth Modal */
+    .auth-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(7, 9, 14, 0.95);
+      border-radius: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      z-index: 50;
+      backdrop-filter: blur(16px);
+      transition: all 0.3s ease;
+    }
+
+    .auth-box {
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+
+    .auth-input {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(0, 240, 255, 0.3);
+      color: #fff;
+      font-size: 1.1rem;
+      padding: 16px 20px;
+      border-radius: 12px;
+      outline: none;
+      text-align: center;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+      transition: all 0.25s;
+    }
+
+    .auth-input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.25);
+      background: rgba(0, 0, 0, 0.4);
+    }
+
+    .auth-error {
+      color: var(--accent-red);
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-top: 12px;
+      display: none;
+    }
+
+    .auth-success-hint {
+      color: var(--accent-green);
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+      display: none;
     }
 
     .dropzone {
@@ -248,14 +279,14 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
-      color: #050811;
-      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.35);
+      background: linear-gradient(135deg, var(--accent-cyan), #0070f3);
+      color: #000;
+      box-shadow: 0 4px 20px rgba(0, 240, 255, 0.3);
     }
 
     .btn-primary:hover {
+      box-shadow: 0 6px 28px rgba(0, 240, 255, 0.5);
       transform: translateY(-2px);
-      box-shadow: 0 14px 36px rgba(0, 240, 255, 0.5);
     }
 
     .btn-secondary {
@@ -265,18 +296,19 @@
     }
 
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.14);
       border-color: rgba(255, 255, 255, 0.3);
     }
 
-    /* Selected Project Panel */
+    /* Selected Meta Panel */
     .project-meta-panel {
       display: none;
-      margin-top: 28px;
-      background: rgba(0, 0, 0, 0.3);
-      border-radius: 14px;
+      margin-top: 24px;
       padding: 20px;
+      background: rgba(0, 0, 0, 0.3);
       border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      text-align: left;
     }
 
     .meta-row {
@@ -288,38 +320,36 @@
     }
 
     .meta-label { color: var(--text-muted); }
-    .meta-value { font-weight: 600; font-family: var(--font-mono); color: var(--accent-cyan); }
+    .meta-value { font-family: var(--mono-font); font-weight: 600; color: var(--accent-cyan); }
 
     .scheme-input {
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
       color: #fff;
       padding: 8px 12px;
-      border-radius: 8px;
-      font-family: var(--font-sans);
+      font-family: var(--mono-font);
+      outline: none;
       width: 220px;
     }
 
-    /* Live Build Progress Console */
+    /* Telemetry Progress Console */
     .progress-console {
       display: none;
-      margin-top: 32px;
-      background: rgba(8, 12, 20, 0.9);
-      border: 1px solid var(--card-border-glow);
-      border-radius: 16px;
-      padding: 24px;
+      margin-top: 24px;
+      text-align: left;
     }
 
     .console-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 20px;
+      margin-bottom: 14px;
     }
 
     .timer-badge {
-      font-family: var(--font-mono);
-      background: rgba(0, 240, 255, 0.12);
+      font-family: var(--mono-font);
+      background: rgba(0, 240, 255, 0.1);
       color: var(--accent-cyan);
       padding: 4px 10px;
       border-radius: 6px;
@@ -327,157 +357,154 @@
     }
 
     .progress-bar-track {
-      width: 100%;
       height: 8px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
       overflow: hidden;
       margin-bottom: 20px;
     }
 
     .progress-bar-fill {
       height: 100%;
-      width: 15%;
-      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-purple));
-      border-radius: 999px;
-      transition: width 0.5s ease;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+      border-radius: 4px;
+      transition: width 0.4s ease;
+      box-shadow: 0 0 12px var(--accent-cyan);
     }
 
-    .stages-list {
+    /* Activity Terminal Console */
+    .activity-log-console {
+      background: #090d16;
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 12px;
+      padding: 16px;
+      font-family: var(--mono-font);
+      font-size: 0.82rem;
+      max-height: 220px;
+      overflow-y: auto;
+      margin-top: 18px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 6px;
     }
 
-    .stage-item {
+    .log-line {
+      display: flex;
+      gap: 8px;
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .log-time { color: var(--text-muted); font-size: 0.75rem; min-width: 65px; }
+    .log-info { color: #58a6ff; }
+    .log-warn { color: #d29922; }
+    .log-error { color: #f85149; }
+    .log-success { color: #3fb950; }
+
+    /* Diagnostic Card */
+    .error-diagnostic-card {
+      display: none;
+      margin-top: 20px;
+      padding: 18px;
+      background: rgba(255, 51, 102, 0.1);
+      border: 1px solid var(--accent-red);
+      border-radius: 14px;
+      text-align: left;
+    }
+
+    .error-title {
+      color: var(--accent-red);
+      font-weight: 700;
+      font-size: 1rem;
+      margin-bottom: 6px;
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-size: 0.92rem;
-      color: var(--text-muted);
-      transition: color 0.3s;
+      gap: 6px;
     }
 
-    .stage-item.active {
-      color: var(--accent-cyan);
-      font-weight: 600;
-    }
-
-    .stage-item.completed {
-      color: var(--accent-green);
-    }
-
-    .stage-indicator {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.2);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.75rem;
-    }
-
-    .stage-item.active .stage-indicator {
-      border-color: var(--accent-cyan);
-      background: rgba(0, 240, 255, 0.2);
-      box-shadow: 0 0 10px var(--accent-cyan);
-    }
-
-    .stage-item.completed .stage-indicator {
-      border-color: var(--accent-green);
-      background: var(--accent-green);
-      color: #000;
+    .error-fix {
+      margin-top: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      color: #fff;
     }
 
     /* Result Card */
     .result-card {
       display: none;
-      margin-top: 32px;
-      background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(0, 240, 255, 0.1));
+      margin-top: 24px;
+      padding: 28px;
+      background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 240, 255, 0.05));
       border: 1px solid var(--accent-green);
       border-radius: 18px;
-      padding: 28px;
       text-align: center;
-      box-shadow: 0 16px 40px rgba(16, 185, 129, 0.15);
     }
 
-    /* Terminal Install Box */
     .terminal-box {
-      background: rgba(10, 14, 24, 0.85);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid var(--card-border);
-      border-radius: 16px;
-      max-width: 680px;
-      margin: 40px auto 72px;
+      background: #0d111a;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
       padding: 16px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      max-width: 720px;
+      margin: 32px auto 0;
+      font-family: var(--mono-font);
+      font-size: 0.95rem;
     }
 
-    .terminal-cmd {
-      font-family: var(--font-mono);
-      font-size: 0.95rem;
-      color: #79ffe1;
-      overflow-x: auto;
-      white-space: nowrap;
-      padding-right: 12px;
-    }
+    .terminal-cmd { color: var(--accent-cyan); display: flex; align-items: center; gap: 10px; }
+    .terminal-prefix { color: var(--text-muted); }
 
     .copy-btn {
       background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      color: var(--text-main);
-      padding: 8px 16px;
-      border-radius: 10px;
-      font-size: 0.85rem;
-      font-weight: 600;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 6px;
-      transition: all 0.2s;
-    }
-
-    .copy-btn:hover {
-      background: rgba(0, 240, 255, 0.2);
-      border-color: var(--accent-cyan);
-      color: #fff;
     }
 
     footer {
       text-align: center;
       padding: 40px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
       color: var(--text-muted);
       font-size: 0.9rem;
-      border-top: 1px solid var(--card-border);
     }
   </style>
 </head>
 <body>
 
-  <div class="spatial-bg">
-    <div class="glow-orb-1"></div>
-    <div class="glow-orb-2"></div>
-    <div class="grid-mesh"></div>
-  </div>
-
   <div class="container">
     <!-- Navbar -->
-    <nav>
-      <a href="/" class="brand">
-        <div class="brand-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#050811" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-          </svg>
+    <header>
+      <div class="nav-content">
+        <a href="/" class="logo-container">
+          <div class="logo-badge">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+              <path d="M2 17l10 5 10-5"></path>
+              <path d="M2 12l10 5 10-5"></path>
+            </svg>
+          </div>
+          <span class="logo-text">CloudIPA</span>
+        </a>
+
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <div class="badge-pill">Apple Silicon macOS-15 Engine</div>
+          <button id="logoutBtn" onclick="handleLogout()" class="copy-btn" style="display:none;">Log Out</button>
         </div>
-        <span>CloudIPA</span>
-      </a>
-      <div class="badge-pill">Web Cloud Studio v1.0.0</div>
-    </nav>
+      </div>
+    </header>
 
     <!-- Hero -->
     <section class="hero">
@@ -490,7 +517,36 @@
       </p>
 
       <!-- Web Builder Studio -->
-      <div class="studio-card">
+      <div class="studio-card" id="studioCard">
+
+        <!-- Passwordless Minimal Auth Modal -->
+        <div class="auth-overlay" id="authModal">
+          <div class="auth-box">
+            <!-- Step 1: Credential 1 -->
+            <div id="authStep1">
+              <input type="password" id="cred1Input" class="auth-input" placeholder="Credential 1" autocomplete="off" autofocus>
+              <button class="btn btn-primary" id="btnNextCred" onclick="submitCred1()" style="width: 100%;">
+                Continue &rarr;
+              </button>
+            </div>
+
+            <!-- Step 2: Credential 2 (OTP) -->
+            <div id="authStep2" style="display: none;">
+              <div class="auth-success-hint" id="otpSentHint" style="display: block;">
+                OTP sent to your Telegram. Enter 6-digit code:
+              </div>
+              <input type="text" id="cred2Input" class="auth-input" placeholder="Credential 2 (6-Digit OTP)" maxlength="6" autocomplete="off">
+              <div style="display: flex; gap: 10px;">
+                <button class="btn btn-secondary" onclick="resetToCred1()" style="flex: 1;">&larr; Back</button>
+                <button class="btn btn-primary" id="btnVerifyOtp" onclick="submitCred2()" style="flex: 2;">Verify</button>
+              </div>
+            </div>
+
+            <div class="auth-error" id="authErrorMsg"></div>
+          </div>
+        </div>
+
+        <!-- Studio Dropzone -->
         <div class="dropzone" id="dropzone" onclick="triggerFolderSelect()">
           <div class="dropzone-icon">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -552,14 +608,19 @@
             <div class="progress-bar-fill" id="progressBar"></div>
           </div>
 
-          <div class="stages-list">
-            <div class="stage-item" id="stage1"><div class="stage-indicator">1</div> Uploading & Compressing Project</div>
-            <div class="stage-item" id="stage2"><div class="stage-indicator">2</div> Dispatching to GitHub Actions</div>
-            <div class="stage-item" id="stage3"><div class="stage-indicator">3</div> Waiting for macOS Runner Allocation</div>
-            <div class="stage-item" id="stage4"><div class="stage-indicator">4</div> Checking Out & Setting Xcode Version</div>
-            <div class="stage-item" id="stage5"><div class="stage-indicator">5</div> Compiling Unsigned .app (xcodebuild)</div>
-            <div class="stage-item" id="stage6"><div class="stage-indicator">6</div> Packaging IPA & Generating Checksum</div>
-            <div class="stage-item" id="stage7"><div class="stage-indicator">7</div> Direct Download Ready</div>
+          <!-- Activity Terminal Feed -->
+          <div class="activity-log-console" id="activityLogConsole">
+            <div class="log-line log-info"><span class="log-time">[--:--:--]</span> Telemetry monitor initialized.</div>
+          </div>
+
+          <!-- Error Diagnostic Card -->
+          <div class="error-diagnostic-card" id="errorDiagnosticCard">
+            <div class="error-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+              Build Execution Diagnostics
+            </div>
+            <div id="errorText" style="font-family: var(--mono-font); font-size: 0.88rem; color: #ff8099; margin-top: 4px;"></div>
+            <div class="error-fix" id="errorFixText"></div>
           </div>
         </div>
 
@@ -606,6 +667,136 @@
     let selectedZipBlob = null;
     let buildStartTime = null;
     let timerInterval = null;
+    let currentCred1 = '';
+
+    function getSessionToken() {
+      return sessionStorage.getItem('cloudipa_auth_token') || '';
+    }
+
+    function checkAuthOnLoad() {
+      const token = getSessionToken();
+      if (token) {
+        document.getElementById('authModal').style.display = 'none';
+        document.getElementById('logoutBtn').style.display = 'inline-flex';
+      } else {
+        document.getElementById('authModal').style.display = 'flex';
+        document.getElementById('logoutBtn').style.display = 'none';
+      }
+    }
+    window.addEventListener('DOMContentLoaded', checkAuthOnLoad);
+
+    function showAuthError(msg) {
+      const errEl = document.getElementById('authErrorMsg');
+      errEl.textContent = msg;
+      errEl.style.display = 'block';
+    }
+
+    function clearAuthError() {
+      const errEl = document.getElementById('authErrorMsg');
+      errEl.textContent = '';
+      errEl.style.display = 'none';
+    }
+
+    // Step 1: Submit Credential 1
+    async function submitCred1() {
+      clearAuthError();
+      const val = document.getElementById('cred1Input').value.trim();
+      if (!val) {
+        showAuthError('Credential 1 is required.');
+        return;
+      }
+
+      const btn = document.getElementById('btnNextCred');
+      btn.textContent = 'Verifying...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/auth/send-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: val }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data.error || 'Invalid Access Credential. Access Denied.');
+        }
+
+        currentCred1 = val;
+        document.getElementById('authStep1').style.display = 'none';
+        document.getElementById('authStep2').style.display = 'block';
+        document.getElementById('cred2Input').focus();
+
+      } catch (err) {
+        showAuthError(err.message);
+      } finally {
+        btn.textContent = 'Continue →';
+        btn.disabled = false;
+      }
+    }
+
+    // Step 2: Submit Credential 2 (OTP)
+    async function submitCred2() {
+      clearAuthError();
+      const otp = document.getElementById('cred2Input').value.trim();
+      if (!otp) {
+        showAuthError('Please enter the 6-digit OTP code.');
+        return;
+      }
+
+      const btn = document.getElementById('btnVerifyOtp');
+      btn.textContent = 'Checking...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/auth/verify-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: currentCred1, otp }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data.error || 'Invalid OTP code.');
+        }
+
+        sessionStorage.setItem('cloudipa_auth_token', data.token);
+        document.getElementById('authModal').style.display = 'none';
+        document.getElementById('logoutBtn').style.display = 'inline-flex';
+
+      } catch (err) {
+        showAuthError(err.message);
+      } finally {
+        btn.textContent = 'Verify';
+        btn.disabled = false;
+      }
+    }
+
+    function resetToCred1() {
+      clearAuthError();
+      document.getElementById('authStep2').style.display = 'none';
+      document.getElementById('authStep1').style.display = 'block';
+      document.getElementById('cred1Input').focus();
+    }
+
+    function handleLogout() {
+      sessionStorage.removeItem('cloudipa_auth_token');
+      document.getElementById('cred1Input').value = '';
+      document.getElementById('cred2Input').value = '';
+      resetToCred1();
+      document.getElementById('authModal').style.display = 'flex';
+      document.getElementById('logoutBtn').style.display = 'none';
+    }
+
+    // Allow Enter key in inputs
+    document.getElementById('cred1Input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitCred1();
+    });
+    document.getElementById('cred2Input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitCred2();
+    });
 
     function triggerFolderSelect() {
       document.getElementById('folderInput').click();
@@ -675,15 +866,17 @@
       document.getElementById('metaPanel').style.display = 'none';
       document.getElementById('progressConsole').style.display = 'block';
       document.getElementById('resultCard').style.display = 'none';
+      document.getElementById('errorDiagnosticCard').style.display = 'none';
 
       buildStartTime = Date.now();
       timerInterval = setInterval(updateTimer, 1000);
 
-      updateStage(1, 'Compressing & uploading project files...');
+      document.getElementById('progressBar').style.width = '10%';
+      document.getElementById('currentStageText').textContent = 'Preparing project files...';
 
       let zipBlob = selectedZipBlob;
 
-      // If user selected a directory, zip in browser using JSZip with smart exclusions & compression
+      // In-browser smart directory zipping & deflate compression
       if (!zipBlob && selectedFiles.length > 0) {
         const zip = new JSZip();
         const IGNORE_PATTERNS = [
@@ -729,8 +922,12 @@
       formData.append('scheme', scheme);
 
       try {
+        const token = getSessionToken();
         const res = await fetch('/api/build', {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
           body: formData,
         });
 
@@ -740,12 +937,17 @@
           data = JSON.parse(resText);
         } catch {
           if (res.status === 413) {
-            throw new Error('Upload exceeds the 1GB server limit. Please remove build caches or DerivedData.');
+            throw new Error('Upload exceeds the 1GB server limit. Please exclude large local assets or caches.');
           } else if (res.status === 502 || res.status === 504) {
             throw new Error(`Server Gateway Error (${res.status}). The cloud build worker is reloading, please retry in 10 seconds.`);
           } else {
             throw new Error(`Server returned HTTP ${res.status}: ${resText.slice(0, 150)}`);
           }
+        }
+
+        if (res.status === 401) {
+          handleLogout();
+          throw new Error('Session expired or authentication required. Please log in.');
         }
 
         if (!res.ok) {
@@ -764,88 +966,104 @@
 
     async function pollBuildStatus(requestId) {
       let consecutiveErrors = 0;
-      const interval = setInterval(async () => {
+
+      const poll = async () => {
         try {
-          const res = await fetch(`/api/build/${requestId}`);
-          if (res.status === 404) {
-            clearInterval(interval);
+          const token = getSessionToken();
+          const res = await fetch(`/api/build/${requestId}`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+
+          if (res.status === 401) {
             clearInterval(timerInterval);
-            alert('Build job not found or has expired.');
+            handleLogout();
+            alert('Session expired. Please log in again.');
             return;
           }
+
+          if (res.status === 404) {
+            clearInterval(timerInterval);
+            alert(`Build job #${requestId} not found on server.`);
+            return;
+          }
+
           if (!res.ok) {
             consecutiveErrors++;
             if (consecutiveErrors >= 3) {
-              clearInterval(interval);
               clearInterval(timerInterval);
-              alert(`Lost connection to build server (HTTP ${res.status}).`);
+              alert(`Build polling aborted after 3 consecutive errors (HTTP ${res.status}).`);
             }
             return;
           }
+
           consecutiveErrors = 0;
-
           const data = await res.json();
-
-          // Error-first state check
-          if (data.status === 'failed') {
-            clearInterval(interval);
-            clearInterval(timerInterval);
-            document.getElementById('currentStageText').textContent = 'Build Failed: ' + (data.error || 'Check build logs');
-            document.getElementById('currentStageText').style.color = '#ef4444';
-            alert('Build failed: ' + (data.error || 'Check build logs'));
-            return;
-          }
-
-          updateStage(data.stage, data.message);
+          renderBuildTelemetry(data);
 
           if (data.status === 'completed') {
-            clearInterval(interval);
             clearInterval(timerInterval);
             document.getElementById('ipaDownloadLink').href = data.artifactUrl;
             document.getElementById('resultCard').style.display = 'block';
-            document.getElementById('progressBar').style.width = '100%';
+          } else if (data.status === 'failed') {
+            clearInterval(timerInterval);
+            document.getElementById('errorDiagnosticCard').style.display = 'block';
+            document.getElementById('errorText').textContent = data.error || data.message || 'Build failed.';
+            document.getElementById('errorFixText').textContent = data.fixSuggestion || 'Inspect the activity feed above for line-by-line compiler error details.';
+          } else {
+            setTimeout(poll, 4000);
           }
-        } catch (err) {
-          console.warn('Status poll warning:', err);
+
+        } catch (e) {
+          console.warn('Status poll glitch:', e);
+          consecutiveErrors++;
+          if (consecutiveErrors >= 3) {
+            clearInterval(timerInterval);
+            alert('Network connection lost while tracking build.');
+          } else {
+            setTimeout(poll, 4000);
+          }
         }
-      }, 5000);
+      };
+
+      setTimeout(poll, 2000);
     }
 
-    function updateStage(stageNumber, message) {
-      document.getElementById('currentStageText').textContent = message || `Executing stage ${stageNumber}...`;
-      const pct = Math.min(Math.round((stageNumber / 7) * 100), 100);
+    function renderBuildTelemetry(data) {
+      const pct = typeof data.progressPct === 'number' ? data.progressPct : Math.min(Math.round((data.stage / 7) * 100), 100);
       document.getElementById('progressBar').style.width = `${pct}%`;
+      document.getElementById('currentStageText').textContent = `[${pct}%] ${data.message || 'Processing...'}`;
 
-      for (let i = 1; i <= 7; i++) {
-        const el = document.getElementById(`stage${i}`);
-        if (!el) continue;
-        if (i < stageNumber) {
-          el.className = 'stage-item completed';
-        } else if (i === stageNumber) {
-          el.className = 'stage-item active';
-        } else {
-          el.className = 'stage-item';
-        }
+      const logEl = document.getElementById('activityLogConsole');
+      if (logEl && Array.isArray(data.activities)) {
+        logEl.innerHTML = data.activities.map(a => {
+          const t = a.time ? new Date(a.time).toLocaleTimeString() : '--:--:--';
+          return `<div class="log-line log-${a.level || 'info'}"><span class="log-time">[${t}]</span> <div><strong>${escapeHtml(a.message)}</strong>${a.detail ? `<div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px;">${escapeHtml(a.detail)}</div>` : ''}</div></div>`;
+        }).join('');
+        logEl.scrollTop = logEl.scrollHeight;
       }
+    }
+
+    function escapeHtml(str) {
+      return String(str || '').replace(/[&<>'"]/g, 
+        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
     }
 
     function updateTimer() {
       if (!buildStartTime) return;
-      const elapsed = Math.floor((Date.now() - buildStartTime) / 1000);
-      const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
-      const secs = String(elapsed % 60).padStart(2, '0');
-      document.getElementById('elapsedTimer').textContent = `${mins}:${secs}`;
+      const totalSec = Math.floor((Date.now() - buildStartTime) / 1000);
+      const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
+      const s = String(totalSec % 60).padStart(2, '0');
+      document.getElementById('elapsedTimer').textContent = `${m}:${s}`;
     }
 
     function copyInstallCmd(btn) {
-      const text = 'curl -fsSL https://ios.akbr.in/install.sh | bash';
-      navigator.clipboard.writeText(text).then(() => {
-        const span = btn.querySelector('span');
-        const orig = span.textContent;
-        span.textContent = 'Copied!';
-        btn.style.borderColor = 'var(--accent-cyan)';
-        setTimeout(() => { span.textContent = orig; btn.style.borderColor = ''; }, 2000);
-      });
+      navigator.clipboard.writeText('curl -fsSL https://ios.akbr.in/install.sh | bash');
+      const span = btn.querySelector('span');
+      const orig = span.textContent;
+      span.textContent = 'Copied!';
+      setTimeout(() => { span.textContent = orig; }, 2000);
     }
   </script>
 </body>

@@ -30,10 +30,16 @@ if (fs.existsSync(envFilePath)) {
 const app = express();
 const PORT = process.env.PORT || 5050;
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://ios.akbr.in').replace(/\/$/, '');
-const HMAC_SECRET = process.env.HMAC_SECRET || 'cloudipa-hmac-secure-token-secret-salt';
+const AUTH_SECRET = process.env.AUTH_SECRET || process.env.HMAC_SECRET || 'cloudipa-secure-auth-secret-key-salt-2026';
+const HMAC_SECRET = process.env.HMAC_SECRET || AUTH_SECRET;
 const API_AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
 const SERVER_GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const SERVER_GITHUB_REPO = process.env.GITHUB_REPO || 'akbar-shaik/CloudIPAAA';
+
+// Telegram Bot & User Configuration
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '1858623580:AAFiBK43EXj0e2cGkiXZL1ui-DCxtdjlR_A';
+const TELEGRAM_USER_ID = process.env.TELEGRAM_USER_ID || '672766342';
+const ALLOWED_CREDENTIAL_1 = process.env.ALLOWED_CREDENTIAL_1 || 'user_Akbar84';
 
 // Strict input validation rules
 const REPO_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -52,11 +58,57 @@ if (!fs.existsSync(BUILDS_DIR)) fs.mkdirSync(BUILDS_DIR, { recursive: true });
 
 const upload = multer({
   dest: UPLOADS_DIR,
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1024 MB limit (1 GB)
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1024 MB (1 GB)
 });
 
-// Memory job registry
+// Memory registries
 const jobs = new Map();
+const otpStore = new Map(); // key -> { otp, expiresAt, attempts, telegramUserId }
+
+// --- Token & Auth Helpers ---
+function signToken(payload, ttlMs = 12 * 60 * 60 * 1000) {
+  const data = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + ttlMs })).toString('base64url');
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url');
+  return `${data}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [data, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url');
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return null;
+    const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    return payload.exp > Date.now() ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function requireAuth(req, res, next) {
+  // Allow API key via header for automation / CLI
+  const clientApiKey = req.headers['x-api-key'] || req.query.apiKey;
+  if (API_AUTH_TOKEN && clientApiKey === API_AUTH_TOKEN) {
+    return next();
+  }
+
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required. Please enter credentials.' });
+  }
+
+  const payload = verifyToken(token);
+  if (!payload) {
+    return res.status(401).json({ error: 'Invalid or expired session token. Please re-authenticate.' });
+  }
+
+  req.user = payload;
+  next();
+}
 
 // Helper: Zip Slip safe extraction
 function extractZipSafely(zipBufferOrPath, destDir) {
@@ -76,6 +128,22 @@ function generateHmacSignature(requestId, expires) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(`${requestId}:${expires}`).digest('hex');
 }
 
+// Helper: Telemetry Activity Recorder
+function recordActivity(job, level, stage, message, detail = '', progressPct = null) {
+  if (typeof progressPct === 'number') {
+    job.progressPct = Math.min(100, Math.max(0, progressPct));
+  }
+  job.stage = stage;
+  job.message = message;
+  job.activities.push({
+    time: new Date().toISOString(),
+    level, // 'info' | 'warn' | 'error' | 'success'
+    stage,
+    message,
+    detail: typeof detail === 'string' ? detail : JSON.stringify(detail),
+  });
+}
+
 // TTL Eviction task running every 15 minutes
 setInterval(() => {
   const now = Date.now();
@@ -85,6 +153,13 @@ setInterval(() => {
   for (const [id, job] of jobs.entries()) {
     if (job.startTime && (now - job.startTime > ONE_HOUR)) {
       jobs.delete(id);
+    }
+  }
+
+  // Evict stale OTPs
+  for (const [key, item] of otpStore.entries()) {
+    if (item.expiresAt && now > item.expiresAt) {
+      otpStore.delete(key);
     }
   }
 
@@ -117,13 +192,131 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000);
 
+// --- Public Endpoints ---
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
     activeJobs: jobs.size,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
+});
+
+// POST /api/auth/send-otp
+// Accepts { username } OR { telegramUserId, botToken }
+app.post('/api/auth/send-otp', async (req, res) => {
+  try {
+    const { username, telegramUserId, botToken } = req.body || {};
+
+    let targetTelegramId = telegramUserId || TELEGRAM_USER_ID;
+    let targetBotToken = botToken || TELEGRAM_BOT_TOKEN;
+    let storeKey = '';
+
+    if (username !== undefined) {
+      // Credential 1 check: Must strictly match ALLOWED_CREDENTIAL_1 ('user_Akbar84' case sensitive)
+      if (username !== ALLOWED_CREDENTIAL_1) {
+        return res.status(401).json({ error: 'Invalid Access Credential. Access Denied.' });
+      }
+      storeKey = username;
+    } else if (telegramUserId) {
+      storeKey = String(telegramUserId);
+    } else {
+      return res.status(400).json({ error: 'Credential 1 is required.' });
+    }
+
+    if (!/^\d{5,15}$/.test(String(targetTelegramId || '')) || !/^\d+:[A-Za-z0-9_-]{30,}$/.test(String(targetBotToken || ''))) {
+      return res.status(400).json({ error: 'Valid Telegram User ID and Bot Token are required.' });
+    }
+
+    // Generate 6-digit OTP
+    const otp = String(crypto.randomInt(100000, 1000000));
+    const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes
+    otpStore.set(storeKey, {
+      otp,
+      telegramUserId: targetTelegramId,
+      expiresAt,
+      attempts: 0,
+    });
+
+    // Send OTP via Telegram Bot
+    const tgResp = await fetch(`https://api.telegram.org/bot${targetBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: targetTelegramId,
+        text: `🔐 *CloudIPA Access Verification*\n\nYour 6-digit OTP code is: \`${otp}\`\n\n⏰ Valid for 5 minutes. Do not share this code.`,
+        parse_mode: 'Markdown',
+      }),
+    });
+
+    if (!tgResp.ok) {
+      const err = await tgResp.json().catch(() => ({}));
+      if (tgResp.status === 400 || tgResp.status === 403) {
+        return res.status(400).json({
+          error: `Telegram delivery error (${tgResp.status}): ${err.description || 'Ensure you sent /start to your bot.'}`,
+        });
+      }
+      return res.status(502).json({ error: `Telegram gateway error: ${err.description || 'Failed to deliver OTP.'}` });
+    }
+
+    res.json({
+      message: 'OTP sent successfully to Telegram.',
+      expiresInSeconds: 300,
+    });
+
+  } catch (err) {
+    console.error('Error sending OTP:', err);
+    res.status(500).json({ error: 'Internal error generating OTP.' });
+  }
+});
+
+// POST /api/auth/verify-otp
+// Accepts { username, otp } OR { telegramUserId, otp }
+app.post('/api/auth/verify-otp', (req, res) => {
+  try {
+    const { username, telegramUserId, otp } = req.body || {};
+    const storeKey = username || (telegramUserId ? String(telegramUserId) : '');
+
+    if (!storeKey || !otp) {
+      return res.status(400).json({ error: 'Credential and OTP are required.' });
+    }
+
+    const entry = otpStore.get(storeKey);
+    if (!entry) {
+      return res.status(400).json({ error: 'No OTP requested or code expired. Please request a new code.' });
+    }
+
+    if (Date.now() > entry.expiresAt) {
+      otpStore.delete(storeKey);
+      return res.status(400).json({ error: 'OTP has expired. Please request a new code.' });
+    }
+
+    if (entry.attempts >= 5) {
+      otpStore.delete(storeKey);
+      return res.status(429).json({ error: 'Too many failed attempts. Lockout triggered. Please request a new OTP.' });
+    }
+
+    if (entry.otp !== String(otp).trim()) {
+      entry.attempts += 1;
+      const remaining = 5 - entry.attempts;
+      return res.status(400).json({ error: `Invalid OTP code. ${remaining} attempt(s) remaining.` });
+    }
+
+    // Success: Clear OTP entry and sign 12-hour session bearer token
+    otpStore.delete(storeKey);
+    const token = signToken({ user: storeKey, role: 'admin' }, 12 * 60 * 60 * 1000);
+
+    res.json({
+      token,
+      message: 'Authentication successful. Welcome to CloudIPA Studio.',
+      expiresInHours: 12,
+    });
+
+  } catch (err) {
+    console.error('Error verifying OTP:', err);
+    res.status(500).json({ error: 'Internal error verifying OTP.' });
+  }
 });
 
 // GET /api/uploads/:requestId (HMAC-signed archive download for GitHub Actions macOS runner)
@@ -158,8 +351,10 @@ app.get('/api/uploads/:requestId', (req, res) => {
   stream.pipe(res);
 });
 
-// GET /api/build/:id (Status polling)
-app.get('/api/build/:id', (req, res) => {
+// --- Protected Endpoints (requireAuth) ---
+
+// GET /api/build/:id (Status polling with real-time telemetry)
+app.get('/api/build/:id', requireAuth, (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'Build job not found' });
@@ -176,6 +371,10 @@ app.get('/api/build/:id', (req, res) => {
     stage: job.stage,
     stageName: job.stageName,
     message: job.message,
+    progressPct: job.progressPct || 0,
+    activities: job.activities || [],
+    runnerSteps: job.runnerSteps || [],
+    fixSuggestion: job.fixSuggestion || null,
     elapsedSeconds: elapsed,
     artifactUrl: job.artifactUrl || null,
     ipaName: job.ipaName || null,
@@ -184,24 +383,15 @@ app.get('/api/build/:id', (req, res) => {
 });
 
 // POST /api/build
-app.post('/api/build', upload.single('projectZip'), async (req, res) => {
+app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
       return res.status(400).json({ error: 'No project file uploaded. Please upload a .zip archive or project folder.' });
     }
 
-    // Authentication: Require user token or server API Key or pre-configured server token
     const clientGitHubToken = req.headers['x-github-token'] || req.body.githubToken;
-    const clientApiKey = req.headers['x-api-key'] || req.body.apiKey;
-
     let effectiveToken = clientGitHubToken || SERVER_GITHUB_TOKEN;
-    if (!effectiveToken) {
-      if (API_AUTH_TOKEN && clientApiKey !== API_AUTH_TOKEN) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        return res.status(401).json({ error: 'Authentication required. Provide X-GitHub-Token or valid X-API-Key.' });
-      }
-    }
 
     const rawRepo = (req.headers['x-github-repo'] || req.body.githubRepo || SERVER_GITHUB_REPO || '').trim();
     if (!REPO_REGEX.test(rawRepo)) {
@@ -230,7 +420,7 @@ app.post('/api/build', upload.single('projectZip'), async (req, res) => {
     const requestId = crypto.randomUUID();
     const startTime = Date.now();
 
-    // Move file to preserved upload location bound to requestId
+    // Preserve upload bound to requestId
     const permanentUploadPath = path.join(UPLOADS_DIR, `${requestId}.zip`);
     fs.renameSync(file.path, permanentUploadPath);
 
@@ -262,8 +452,8 @@ app.post('/api/build', upload.single('projectZip'), async (req, res) => {
 
     const effectiveScheme = detectedScheme || detectedProjectName;
 
-    // Generate HMAC-signed archive URL valid for 20 minutes
-    const expires = Date.now() + (20 * 60 * 1000);
+    // Generate HMAC-signed archive URL valid for 25 minutes
+    const expires = Date.now() + (25 * 60 * 1000);
     const signature = generateHmacSignature(requestId, expires);
     const archiveUrl = `${PUBLIC_BASE_URL}/api/uploads/${requestId}?expires=${expires}&sig=${signature}`;
 
@@ -272,14 +462,21 @@ app.post('/api/build', upload.single('projectZip'), async (req, res) => {
       status: 'in_progress',
       stage: 1,
       stageName: 'Project Uploaded & Signed',
-      message: 'Project uploaded, HMAC signature generated.',
+      message: 'Project uploaded and HMAC signed URL generated.',
+      progressPct: 15,
       startTime,
       elapsedSeconds: 0,
       scheme: effectiveScheme,
       uploadFilePath: permanentUploadPath,
+      activities: [],
+      runnerSteps: [],
+      fixSuggestion: null,
       artifactUrl: null,
       error: null,
     };
+
+    recordActivity(job, 'info', 1, 'Project uploaded and archive integrity scanned', `Found scheme: ${effectiveScheme}`, 10);
+    recordActivity(job, 'info', 1, 'Generated HMAC-signed temporary download URL for macOS runner', `Expires in 25 minutes`, 15);
 
     jobs.set(requestId, job);
 
@@ -303,10 +500,7 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
   if (!job) return;
 
   try {
-    // Stage 2: Dispatched to Cloud Runner
-    job.stage = 2;
-    job.stageName = 'Dispatching macOS Runner';
-    job.message = `Sending build request to GitHub Actions [${repo}]...`;
+    recordActivity(job, 'info', 2, `Dispatching GitHub Actions workflow on ${repo}...`, `Ref: main, Runner: ${runner}`, 25);
 
     const dispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/cloudipa-build.yml/dispatches`;
     const dispatchBody = JSON.stringify({
@@ -336,20 +530,27 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
     if (!dispatchResp.ok) {
       const errText = await dispatchResp.text();
-      throw new Error(`Failed to dispatch GitHub Actions workflow (${dispatchResp.status}): ${errText}`);
+      let parsedErr = {};
+      try { parsedErr = JSON.parse(errText); } catch {}
+
+      if (dispatchResp.status === 404) {
+        job.fixSuggestion = "Workflow file 'cloudipa-build.yml' was not found on GitHub. Please ensure the workflow is committed to the 'main' branch of your repository and that your GitHub token has 'Workflows: Read and write' and 'Contents: Read and write' permissions.";
+      } else if (dispatchResp.status === 401 || dispatchResp.status === 403) {
+        job.fixSuggestion = "GitHub API authorization failed. Verify that your GitHub token is valid and possesses 'Actions: Read and write' and 'Workflows: Read and write' permissions.";
+      }
+
+      throw new Error(`Failed to dispatch GitHub Actions workflow (${dispatchResp.status}): ${parsedErr.message || errText}`);
     }
 
-    // Stage 3: Queued & Allocating Runner
-    job.stage = 3;
-    job.stageName = 'Queued in Cloud';
-    job.message = 'Waiting for an available GitHub macOS runner (macos-15)...';
+    recordActivity(job, 'info', 3, 'Waiting for macOS runner allocation in GitHub Actions queue...', '', 35);
 
     let targetRunId = null;
     let targetRun = null;
     const pollStart = Date.now();
+    const seenSteps = new Set();
 
     while (Date.now() - pollStart < 25 * 60 * 1000) {
-      await sleep(10000); // 10s polite poll
+      await sleep(10000); // 10s polite polling interval
 
       if (!targetRunId) {
         const listUrl = `https://api.github.com/repos/${repo}/actions/runs?event=workflow_dispatch&per_page=10`;
@@ -367,9 +568,53 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
           if (matched) {
             targetRunId = matched.id;
             targetRun = matched;
+            recordActivity(job, 'info', 4, `macOS runner allocated. Build run #${targetRunId} started`, '', 40);
           }
         }
       } else {
+        // Query live job and runner steps
+        const jobsUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}/jobs`;
+        const jobsResp = await fetch(jobsUrl, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'CloudIPA-Web-Builder',
+          },
+        });
+
+        if (jobsResp.ok) {
+          const jobsData = await jobsResp.json();
+          const firstJob = (jobsData.jobs || [])[0];
+          if (firstJob && Array.isArray(firstJob.steps)) {
+            job.runnerSteps = firstJob.steps;
+            for (const step of firstJob.steps) {
+              const stepKey = `${step.name}:${step.status}`;
+              if (!seenSteps.has(stepKey)) {
+                seenSteps.add(stepKey);
+
+                let mappedPct = null;
+                let mappedStage = job.stage;
+
+                if (step.name.includes('Checkout')) { mappedPct = 40; mappedStage = 4; }
+                else if (step.name.includes('Fetch Uploaded Web Studio Archive')) { mappedPct = 45; mappedStage = 4; }
+                else if (step.name.includes('Select Xcode Version')) { mappedPct = 50; mappedStage = 4; }
+                else if (step.name.includes('Resolve Project & Scheme')) { mappedPct = 60; mappedStage = 4; }
+                else if (step.name.includes('Compile Unsigned iOS Application')) { mappedPct = 70; mappedStage = 5; }
+                else if (step.name.includes('Package Unsigned IPA')) { mappedPct = 80; mappedStage = 6; }
+                else if (step.name.includes('Upload')) { mappedPct = 85; mappedStage = 6; }
+
+                if (step.status === 'in_progress') {
+                  recordActivity(job, 'info', mappedStage, `Runner executing: ${step.name}`, '', mappedPct);
+                } else if (step.status === 'completed') {
+                  const level = step.conclusion === 'success' ? 'info' : 'error';
+                  recordActivity(job, level, mappedStage, `Runner finished: ${step.name} (${step.conclusion})`, '', mappedPct);
+                }
+              }
+            }
+          }
+        }
+
+        // Query overall run status
         const runUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}`;
         const runResp = await fetch(runUrl, {
           headers: {
@@ -381,12 +626,7 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
         if (runResp.ok) {
           targetRun = await runResp.json();
-
-          if (targetRun.status === 'in_progress') {
-            job.stage = 5;
-            job.stageName = 'Compiling on macOS';
-            job.message = `xcodebuild compiling scheme '${scheme}' on Apple Silicon runner...`;
-          } else if (targetRun.status === 'completed') {
+          if (targetRun.status === 'completed') {
             break;
           }
         }
@@ -395,13 +635,31 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
     if (!targetRun || targetRun.conclusion !== 'success') {
       const conclusion = targetRun ? targetRun.conclusion : 'timeout';
-      throw new Error(`Cloud compilation failed with status: ${conclusion}. Check GitHub repository Actions tab for details.`);
+
+      // Diagnose failure reason from steps
+      if (job.runnerSteps.length > 0) {
+        const failedStep = job.runnerSteps.find(s => s.conclusion === 'failure');
+        if (failedStep) {
+          const name = failedStep.name.toLowerCase();
+          if (name.includes('scheme') || name.includes('resolve')) {
+            job.fixSuggestion = "Could not find a valid Xcode scheme. In your iOS project, go to Xcode -> Product -> Scheme -> Manage Schemes, and ensure 'Shared' is checked.";
+          } else if (name.includes('compile') || name.includes('xcodebuild')) {
+            job.fixSuggestion = "xcodebuild compiler failure. Check that your project builds cleanly without signing and that external dependencies/Pods are committed.";
+          } else if (name.includes('fetch') || name.includes('archive')) {
+            job.fixSuggestion = "macOS runner could not download the uploaded archive. Check server network accessibility.";
+          }
+        }
+      }
+
+      if (!job.fixSuggestion) {
+        job.fixSuggestion = "Inspect the GitHub Actions workflow run logs for detailed compiler error traces.";
+      }
+
+      throw new Error(`Cloud compilation finished with status: '${conclusion}'.`);
     }
 
     // Stage 6: Artifact Download
-    job.stage = 6;
-    job.stageName = 'Downloading & Verifying IPA';
-    job.message = 'Retrieving compiled unsigned .ipa from GitHub runner...';
+    recordActivity(job, 'info', 6, 'Retrieving compiled unsigned .ipa from GitHub runner...', '', 90);
 
     const artifactsUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}/artifacts`;
     const artResp = await fetch(artifactsUrl, {
@@ -439,6 +697,8 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
     const destDir = path.join(BUILDS_DIR, requestId);
     if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
 
+    recordActivity(job, 'info', 6, 'Validating ZIP integrity and Payload structure (Zip Slip protection)...', '', 95);
+
     // Extract with Zip Slip protection
     extractZipSafely(buffer, destDir);
 
@@ -450,8 +710,9 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
     job.status = 'completed';
     job.ipaName = ipaFile;
     job.artifactUrl = `/builds/${requestId}/${ipaFile}`;
-    job.message = 'Unsigned IPA built successfully! Ready for download.';
     job.elapsedSeconds = Math.floor((Date.now() - job.startTime) / 1000);
+
+    recordActivity(job, 'success', 7, 'Unsigned IPA built successfully! Ready for download.', `Package: ${ipaFile}`, 100);
 
   } catch (err) {
     console.error(`Build pipeline error for ${requestId}:`, err);
@@ -459,8 +720,9 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
     job.stageName = 'Build Failed';
     job.error = err.message || 'Unknown build error';
     job.message = err.message;
+    recordActivity(job, 'error', job.stage, `Build failed: ${err.message}`, job.fixSuggestion || '');
   } finally {
-    // Delete uploaded zip file after runner downloads it or upon completion
+    // Clean up local temp upload after pipeline concludes
     try {
       if (job.uploadFilePath && fs.existsSync(job.uploadFilePath)) {
         fs.unlinkSync(job.uploadFilePath);
@@ -473,6 +735,20 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`CloudIPA Web Builder backend running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`CloudIPA Web Builder backend running on port ${PORT}`);
+  });
+}
+
+module.exports = {
+  app,
+  signToken,
+  verifyToken,
+  generateHmacSignature,
+  extractZipSafely,
+  recordActivity,
+  otpStore,
+  jobs,
+  ALLOWED_CREDENTIAL_1,
+};
