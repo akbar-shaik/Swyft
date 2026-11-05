@@ -56,6 +56,9 @@ const BUILDS_DIR = '/var/www/cloudipa/builds';
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(BUILDS_DIR)) fs.mkdirSync(BUILDS_DIR, { recursive: true });
 
+app.use(express.static(path.join(__dirname, '..', 'web')));
+app.use('/builds', express.static(BUILDS_DIR));
+
 const upload = multer({
   dest: UPLOADS_DIR,
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1024 MB (1 GB)
@@ -543,7 +546,7 @@ app.post('/api/settings/github', requireAuth, async (req, res) => {
 });
 
 // GET /api/build/:id (Status polling with real-time telemetry)
-app.get('/api/build/:id', requireAuth, (req, res) => {
+app.get('/api/build/:id', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'Build job not found' });
@@ -572,7 +575,7 @@ app.get('/api/build/:id', requireAuth, (req, res) => {
 });
 
 // POST /api/build
-app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res) => {
+app.post('/api/build', upload.single('projectZip'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
@@ -580,7 +583,7 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
     }
 
     const clientGitHubToken = req.headers['x-github-token'] || req.body.githubToken;
-    let effectiveToken = clientGitHubToken || SERVER_GITHUB_TOKEN;
+    let effectiveToken = (clientGitHubToken || SERVER_GITHUB_TOKEN || '').trim();
 
     const rawRepo = (req.headers['x-github-repo'] || req.body.githubRepo || SERVER_GITHUB_REPO || '').trim();
     if (!REPO_REGEX.test(rawRepo)) {
@@ -615,19 +618,12 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
 
     // Inspect archive for schemes and project name
     let detectedScheme = scheme;
-    let detectedProjectName = 'App';
 
     try {
       const zip = new AdmZip(permanentUploadPath);
       const entries = zip.getEntries();
       for (const entry of entries) {
         const name = entry.entryName;
-        if (name.endsWith('.xcodeproj/') || name.endsWith('.xcodeproj')) {
-          const base = path.basename(name, '.xcodeproj');
-          if (!detectedProjectName || detectedProjectName === 'App') {
-            detectedProjectName = base;
-          }
-        }
         if (name.includes('xcshareddata/xcschemes/') && name.endsWith('.xcscheme')) {
           const schemeName = path.basename(name, '.xcscheme');
           if (!detectedScheme) {
@@ -639,7 +635,7 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
       console.warn('Zip parsing note:', err.message);
     }
 
-    const effectiveScheme = detectedScheme || detectedProjectName;
+    const effectiveScheme = detectedScheme || '';
 
     // Generate HMAC-signed archive URL valid for 25 minutes
     const expires = Date.now() + (25 * 60 * 1000);
@@ -655,7 +651,7 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
       progressPct: 15,
       startTime,
       elapsedSeconds: 0,
-      scheme: effectiveScheme,
+      scheme: effectiveScheme || 'Auto-Detected',
       uploadFilePath: permanentUploadPath,
       activities: [],
       runnerSteps: [],
@@ -664,7 +660,7 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
       error: null,
     };
 
-    recordActivity(job, 'info', 1, 'Project uploaded and archive integrity scanned', `Found scheme: ${effectiveScheme}`, 10);
+    recordActivity(job, 'info', 1, 'Project uploaded and archive integrity scanned', effectiveScheme ? `Found scheme: ${effectiveScheme}` : 'Runner will auto-detect scheme from project', 10);
     recordActivity(job, 'info', 1, 'Generated HMAC-signed temporary download URL for macOS runner', `Expires in 25 minutes`, 15);
 
     jobs.set(requestId, job);
@@ -684,12 +680,82 @@ app.post('/api/build', requireAuth, upload.single('projectZip'), async (req, res
   }
 });
 
+async function ensureWorkflowReady(token, repo) {
+  const checkUrl = `https://api.github.com/repos/${repo}/contents/.github/workflows/cloudipa-build.yml`;
+  const checkResp = await fetch(checkUrl, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'CloudIPA',
+    },
+  });
+  if (checkResp.ok) return;
+
+  const repoResp = await fetch(`https://api.github.com/repos/${repo}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'CloudIPA',
+    },
+  });
+  if (!repoResp.ok) {
+    throw new Error(`Repository '${repo}' not accessible (${repoResp.status})`);
+  }
+  const repoData = await repoResp.json();
+  const branch = repoData.default_branch || 'main';
+
+  const candidatePaths = [
+    path.join(__dirname, '..', 'templates', 'cloudipa-build.yml'),
+    path.join(__dirname, 'templates', 'cloudipa-build.yml'),
+    path.join(__dirname, '..', '.github', 'workflows', 'cloudipa-build.yml'),
+    path.join(__dirname, '.github', 'workflows', 'cloudipa-build.yml'),
+    path.join(__dirname, 'cloudipa-build.yml'),
+  ];
+  let templateContent = '';
+  for (const cp of candidatePaths) {
+    if (fs.existsSync(cp)) {
+      templateContent = fs.readFileSync(cp, 'utf8');
+      break;
+    }
+  }
+  if (!templateContent) {
+    throw new Error('Local workflow template file not found on server.');
+  }
+
+  const putResp = await fetch(checkUrl, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'CloudIPA',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: 'ci: auto-heal CloudIPA macOS builder workflow',
+      content: Buffer.from(templateContent, 'utf8').toString('base64'),
+      branch,
+    }),
+  });
+
+  if (!putResp.ok) {
+    const errText = await putResp.text();
+    console.warn(`ensureWorkflowReady warning (${putResp.status}):`, errText);
+  }
+}
+
 async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, configuration, runner) {
   const job = jobs.get(requestId);
   if (!job) return;
 
   try {
-    recordActivity(job, 'info', 2, `Dispatching GitHub Actions workflow on ${repo}...`, `Ref: main, Runner: ${runner}`, 25);
+    recordActivity(job, 'info', 2, `Verifying runner workflow on ${repo}...`, '', 20);
+    try {
+      await ensureWorkflowReady(token, repo);
+    } catch (healErr) {
+      console.warn('ensureWorkflowReady notice:', healErr.message);
+    }
+
+    recordActivity(job, 'info', 2, `Dispatching GitHub Actions workflow on ${repo}...`, `Runner: ${runner}`, 25);
 
     const dispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/cloudipa-build.yml/dispatches`;
     const dispatchBody = JSON.stringify({
@@ -822,86 +888,95 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
       }
     }
 
-    if (!targetRun || targetRun.conclusion !== 'success') {
-      const conclusion = targetRun ? targetRun.conclusion : 'timeout';
+    // Retrieve artifacts (both on success or failure)
+    recordActivity(job, 'info', 6, 'Retrieving compilation results from GitHub runner...', '', 90);
 
-      // Diagnose failure reason from steps
-      if (job.runnerSteps.length > 0) {
-        const failedStep = job.runnerSteps.find(s => s.conclusion === 'failure');
-        if (failedStep) {
-          const name = failedStep.name.toLowerCase();
-          if (name.includes('scheme') || name.includes('resolve')) {
-            job.fixSuggestion = "Could not find a valid Xcode scheme. In your iOS project, go to Xcode -> Product -> Scheme -> Manage Schemes, and ensure 'Shared' is checked.";
-          } else if (name.includes('compile') || name.includes('xcodebuild')) {
-            job.fixSuggestion = "xcodebuild compiler failure. Check that your project builds cleanly without signing and that external dependencies/Pods are committed.";
-          } else if (name.includes('fetch') || name.includes('archive')) {
-            job.fixSuggestion = "macOS runner could not download the uploaded archive. Check server network accessibility.";
+    let buildInfo = null;
+    let extractedIpa = null;
+    const destDir = path.join(BUILDS_DIR, requestId);
+
+    if (targetRunId) {
+      try {
+        const artifactsUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}/artifacts`;
+        const artResp = await fetch(artifactsUrl, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'CloudIPA-Web-Builder',
+          },
+        });
+
+        if (artResp.ok) {
+          const artData = await artResp.json();
+          const artifact = (artData.artifacts || []).find(a => a.name.includes(requestId) || a.name.includes('cloudipa-artifact'));
+          if (artifact) {
+            const downloadZipResp = await fetch(artifact.archive_download_url, {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'User-Agent': 'CloudIPA-Web-Builder',
+              },
+            });
+            if (downloadZipResp.ok) {
+              const buffer = Buffer.from(await downloadZipResp.arrayBuffer());
+              if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+              extractZipSafely(buffer, destDir);
+
+              const buildInfoPath = path.join(destDir, 'build-info.json');
+              if (fs.existsSync(buildInfoPath)) {
+                try {
+                  buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, 'utf8'));
+                } catch {}
+              }
+
+              const files = fs.readdirSync(destDir);
+              extractedIpa = files.find(f => f.endsWith('.ipa'));
+            }
           }
         }
+      } catch (artErr) {
+        console.warn('Artifact fetch warning:', artErr.message);
       }
-
-      if (!job.fixSuggestion) {
-        job.fixSuggestion = "Inspect the GitHub Actions workflow run logs for detailed compiler error traces.";
-      }
-
-      throw new Error(`Cloud compilation finished with status: '${conclusion}'.`);
     }
 
-    // Stage 6: Artifact Download
-    recordActivity(job, 'info', 6, 'Retrieving compiled unsigned .ipa from GitHub runner...', '', 90);
-
-    const artifactsUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}/artifacts`;
-    const artResp = await fetch(artifactsUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'CloudIPA-Web-Builder',
-      },
-    });
-
-    if (!artResp.ok) {
-      throw new Error(`Failed to fetch artifact list: HTTP ${artResp.status}`);
+    if (targetRun && targetRun.conclusion === 'success' && extractedIpa) {
+      job.stage = 7;
+      job.stageName = 'Build Complete';
+      job.status = 'completed';
+      job.ipaName = extractedIpa;
+      job.artifactUrl = `/builds/${requestId}/${extractedIpa}`;
+      job.elapsedSeconds = Math.floor((Date.now() - job.startTime) / 1000);
+      recordActivity(job, 'success', 7, 'Unsigned IPA built successfully! Ready for download.', `Package: ${extractedIpa}`, 100);
+      return;
     }
 
-    const artData = await artResp.json();
-    const artifact = (artData.artifacts || []).find(a => a.name.includes(requestId) || a.name.includes('cloudipa-artifact'));
-
-    if (!artifact) {
-      throw new Error('No compiled artifact found for this build run.');
+    // Compilation failed or IPA not found
+    let compilerErrors = [];
+    if (buildInfo && Array.isArray(buildInfo.compilerErrors) && buildInfo.compilerErrors.length > 0) {
+      compilerErrors = buildInfo.compilerErrors;
     }
 
-    const downloadZipResp = await fetch(artifact.archive_download_url, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'User-Agent': 'CloudIPA-Web-Builder',
-      },
-    });
-
-    if (!downloadZipResp.ok) {
-      throw new Error(`Failed to download artifact archive: HTTP ${downloadZipResp.status}`);
-    }
-
-    const buffer = Buffer.from(await downloadZipResp.arrayBuffer());
-
-    const destDir = path.join(BUILDS_DIR, requestId);
-    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-
-    recordActivity(job, 'info', 6, 'Validating ZIP integrity and Payload structure (Zip Slip protection)...', '', 95);
-
-    // Extract with Zip Slip protection
-    extractZipSafely(buffer, destDir);
-
-    const files = fs.readdirSync(destDir);
-    const ipaFile = files.find(f => f.endsWith('.ipa')) || `${scheme}.unsigned.ipa`;
-
-    job.stage = 7;
-    job.stageName = 'Build Complete';
-    job.status = 'completed';
-    job.ipaName = ipaFile;
-    job.artifactUrl = `/builds/${requestId}/${ipaFile}`;
+    job.status = 'failed';
+    job.stageName = 'Build Failed';
+    job.progressPct = 100;
     job.elapsedSeconds = Math.floor((Date.now() - job.startTime) / 1000);
 
-    recordActivity(job, 'success', 7, 'Unsigned IPA built successfully! Ready for download.', `Package: ${ipaFile}`, 100);
+    if (compilerErrors.length > 0) {
+      job.error = compilerErrors.join('\n');
+      job.message = `${compilerErrors.length} compiler error(s) found in iOS source code.`;
+      job.fixSuggestion = "Review the Swift/Xcode compiler errors below and fix the failing files in your project.";
+      recordActivity(job, 'error', job.stage, `Compiler error: ${compilerErrors[0]}`, compilerErrors.slice(1).join('\n') || '');
+    } else {
+      const conclusion = targetRun ? targetRun.conclusion : 'timeout';
+      let failedStepName = '';
+      if (job.runnerSteps && job.runnerSteps.length > 0) {
+        const failedStep = job.runnerSteps.find(s => s.conclusion === 'failure');
+        if (failedStep) failedStepName = failedStep.name;
+      }
+      job.error = failedStepName ? `Build step failed: ${failedStepName}` : `Cloud compilation finished with status: '${conclusion}'.`;
+      job.message = job.error;
+      job.fixSuggestion = job.fixSuggestion || "Verify your project schemes and dependencies build without errors in Xcode.";
+      recordActivity(job, 'error', job.stage, job.error, job.fixSuggestion);
+    }
 
   } catch (err) {
     console.error(`Build pipeline error for ${requestId}:`, err);

@@ -519,8 +519,8 @@
       <!-- Web Builder Studio -->
       <div class="studio-card" id="studioCard">
 
-        <!-- Passwordless Minimal Auth Modal -->
-        <div class="auth-overlay" id="authModal">
+        <!-- Passwordless Minimal Auth Modal (Hidden in Frictionless Mode) -->
+        <div class="auth-overlay" id="authModal" style="display: none;">
           <div class="auth-box">
             <!-- Step 1: Credential 1 -->
             <div id="authStep1">
@@ -674,14 +674,11 @@
     }
 
     function checkAuthOnLoad() {
-      const token = getSessionToken();
-      if (token) {
-        document.getElementById('authModal').style.display = 'none';
-        document.getElementById('logoutBtn').style.display = 'inline-flex';
-      } else {
-        document.getElementById('authModal').style.display = 'flex';
-        document.getElementById('logoutBtn').style.display = 'none';
-      }
+      // Zero friction: No login barrier, immediately interactive
+      const modal = document.getElementById('authModal');
+      if (modal) modal.style.display = 'none';
+      const logoutBtn = document.getElementById('logoutBtn');
+      if (logoutBtn) logoutBtn.style.display = 'none';
     }
     window.addEventListener('DOMContentLoaded', checkAuthOnLoad);
 
@@ -806,20 +803,45 @@
       document.getElementById('zipInput').click();
     }
 
-    // Drag and drop handlers
+    // Recursive directory drag and drop handler
     const dropzone = document.getElementById('dropzone');
     dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
     dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-    dropzone.addEventListener('drop', (e) => {
+    dropzone.addEventListener('drop', async (e) => {
       e.preventDefault();
       dropzone.classList.remove('dragover');
-      if (e.dataTransfer.files.length > 0) {
-        const file = e.dataTransfer.files[0];
-        if (file.name.endsWith('.zip')) {
-          handleZipSelect(file);
-        } else {
-          handleFolderSelect(e.dataTransfer.files);
+      const items = e.dataTransfer.items;
+      if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+        const files = [];
+        const readEntry = (entry, pathPrefix = '') => new Promise((resolve) => {
+          if (entry.isFile) {
+            entry.file((file) => {
+              Object.defineProperty(file, 'webkitRelativePath', { value: pathPrefix + file.name });
+              files.push(file);
+              resolve();
+            });
+          } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            const readBatch = () => reader.readEntries(async (entries) => {
+              if (!entries.length) return resolve();
+              await Promise.all(entries.map((en) => readEntry(en, `${pathPrefix}${entry.name}/`)));
+              readBatch();
+            });
+            readBatch();
+          } else resolve();
+        });
+        await Promise.all(Array.from(items).map((item) => {
+          const entry = item.webkitGetAsEntry();
+          return entry ? readEntry(entry) : Promise.resolve();
+        }));
+        if (files.length === 1 && files[0].name.endsWith('.zip')) {
+          handleZipSelect(files[0]);
+        } else if (files.length > 0) {
+          handleFolderSelect(files);
         }
+      } else if (e.dataTransfer.files.length > 0) {
+        const f = e.dataTransfer.files[0];
+        f.name.endsWith('.zip') ? handleZipSelect(f) : handleFolderSelect(e.dataTransfer.files);
       }
     });
 
@@ -848,11 +870,12 @@
       }
 
       if (!detectedProj) {
-        document.getElementById('metaProjectName').innerHTML = '<span style="color:var(--accent-red);font-weight:700;">⚠️ No .xcodeproj or .xcworkspace found</span>';
-        document.getElementById('metaFileCount').innerHTML = `<span style="color:#ff8099">${selectedFiles.length} files selected. Please select the folder containing your Xcode project.</span>`;
+        document.getElementById('metaProjectName').textContent = 'iOS Project Folder';
+        document.getElementById('metaFileCount').textContent = `${selectedFiles.length} files detected (auto-detect scheme on runner)`;
         document.getElementById('schemeInput').value = '';
-        document.getElementById('startBuildBtn').disabled = true;
-        document.getElementById('startBuildBtn').style.opacity = '0.5';
+        document.getElementById('schemeInput').placeholder = 'Auto-detected on runner';
+        document.getElementById('startBuildBtn').disabled = false;
+        document.getElementById('startBuildBtn').style.opacity = '1';
       } else {
         document.getElementById('metaProjectName').textContent = detectedProj;
         document.getElementById('metaFileCount').textContent = `${selectedFiles.length} files detected`;
@@ -871,12 +894,15 @@
       const baseName = file.name.replace(/\.zip$/i, '');
       document.getElementById('metaProjectName').textContent = file.name;
       document.getElementById('metaFileCount').textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB ZIP`;
-      document.getElementById('schemeInput').value = baseName;
+      document.getElementById('schemeInput').value = '';
+      document.getElementById('schemeInput').placeholder = 'Auto-detected on runner';
+      document.getElementById('startBuildBtn').disabled = false;
+      document.getElementById('startBuildBtn').style.opacity = '1';
       document.getElementById('metaPanel').style.display = 'block';
     }
 
     async function startCloudBuild() {
-      const scheme = document.getElementById('schemeInput').value.trim() || 'App';
+      const scheme = document.getElementById('schemeInput').value.trim();
       document.getElementById('metaPanel').style.display = 'none';
       document.getElementById('progressConsole').style.display = 'block';
       document.getElementById('resultCard').style.display = 'none';
@@ -932,16 +958,17 @@
       }
 
       const formData = new FormData();
-      formData.append('projectZip', zipBlob, `${scheme}.zip`);
-      formData.append('scheme', scheme);
+      formData.append('projectZip', zipBlob, `${scheme || 'project'}.zip`);
+      if (scheme) formData.append('scheme', scheme);
 
       try {
         const token = getSessionToken();
+        const headers = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
         const res = await fetch('/api/build', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
+          headers,
           body: formData,
         });
 
@@ -959,11 +986,6 @@
           }
         }
 
-        if (res.status === 401) {
-          handleLogout();
-          throw new Error('Session expired or authentication required. Please log in.');
-        }
-
         if (!res.ok) {
           throw new Error(data.error || `Server error (${res.status})`);
         }
@@ -972,7 +994,7 @@
 
       } catch (err) {
         clearInterval(timerInterval);
-        alert('Build Dispatch Error: ' + err.message);
+        alert('Build Error: ' + err.message);
         document.getElementById('metaPanel').style.display = 'block';
         document.getElementById('progressConsole').style.display = 'none';
       }
@@ -984,18 +1006,10 @@
       const poll = async () => {
         try {
           const token = getSessionToken();
-          const res = await fetch(`/api/build/${requestId}`, {
-            headers: {
-              'Authorization': `Bearer ${token}`,
-            },
-          });
+          const headers = {};
+          if (token) headers['Authorization'] = `Bearer ${token}`;
 
-          if (res.status === 401) {
-            clearInterval(timerInterval);
-            handleLogout();
-            alert('Session expired. Please log in again.');
-            return;
-          }
+          const res = await fetch(`/api/build/${requestId}`, { headers });
 
           if (res.status === 404) {
             clearInterval(timerInterval);
@@ -1007,7 +1021,7 @@
             consecutiveErrors++;
             if (consecutiveErrors >= 3) {
               clearInterval(timerInterval);
-              alert(`Build polling aborted after 3 consecutive errors (HTTP ${res.status}).`);
+              alert(`Build tracking encountered repeated errors (HTTP ${res.status}).`);
             }
             return;
           }
@@ -1024,13 +1038,25 @@
             clearInterval(timerInterval);
             document.getElementById('errorDiagnosticCard').style.display = 'block';
             document.getElementById('errorText').textContent = data.error || data.message || 'Build failed.';
-            document.getElementById('errorFixText').textContent = data.fixSuggestion || 'Inspect the activity feed above for line-by-line compiler error details.';
+            document.getElementById('errorFixText').textContent = data.fixSuggestion || 'Check your Xcode schemes, files, and dependencies.';
           } else {
             setTimeout(poll, 4000);
           }
 
         } catch (e) {
           console.warn('Status poll glitch:', e);
+          consecutiveErrors++;
+          if (consecutiveErrors >= 3) {
+            clearInterval(timerInterval);
+            alert('Network connection lost while tracking build.');
+          } else {
+            setTimeout(poll, 4000);
+          }
+        }
+      };
+
+      setTimeout(poll, 2000);
+    }
           consecutiveErrors++;
           if (consecutiveErrors >= 3) {
             clearInterval(timerInterval);
