@@ -159,18 +159,38 @@ export class NativeIosAdapter implements BuildAdapter {
   }
 
   private extractPbxNativeTargets(pbxContent: string): string[] {
-    const targets: string[] = [];
-    const targetRegex = /isa\s*=\s*PBXNativeTarget\s*;[\s\S]*?name\s*=\s*(?:\"([^\"]+)\"|([^;\s]+));/g;
+    const appTargets: string[] = [];
+    const otherTargets: string[] = [];
+    const targetBlockRegex = /([0-9A-Fa-f]{24})\s*\/\*\s*([^*]+)\s*\*\/\s*=\s*\{[^}]*?isa\s*=\s*PBXNativeTarget;[\s\S]*?\};/g;
     let match: RegExpExecArray | null;
 
-    while ((match = targetRegex.exec(pbxContent)) !== null) {
-      const name = match[1] || match[2];
-      if (name && !name.includes('Tests') && !name.includes('UITests')) {
-        targets.push(name.trim());
+    while ((match = targetBlockRegex.exec(pbxContent)) !== null) {
+      const block = match[0];
+      const nameMatch = block.match(/name\s*=\s*(?:"([^"]+)"|([^;\s]+));/);
+      const productTypeMatch = block.match(/productType\s*=\s*(?:"([^"]+)"|([^;\s]+));/);
+      const name = nameMatch ? (nameMatch[1] || nameMatch[2]) : null;
+      const productType = productTypeMatch ? (productTypeMatch[1] || productTypeMatch[2]) : '';
+
+      if (name && !name.includes('Tests') && !name.includes('UITests') && !name.startsWith('Pods-')) {
+        if (productType.includes('application')) {
+          appTargets.push(name.trim());
+        } else {
+          otherTargets.push(name.trim());
+        }
       }
     }
 
-    return targets;
+    if (appTargets.length > 0) return appTargets;
+    if (otherTargets.length > 0) return otherTargets;
+
+    const simpleRegex = /isa\s*=\s*PBXNativeTarget\s*;[\s\S]*?name\s*=\s*(?:"([^"]+)"|([^;\s]+));/g;
+    while ((match = simpleRegex.exec(pbxContent)) !== null) {
+      const name = match[1] || match[2];
+      if (name && !name.includes('Tests') && !name.includes('UITests') && !name.startsWith('Pods-')) {
+        otherTargets.push(name.trim());
+      }
+    }
+    return otherTargets;
   }
 
   private extractPbxprojMetadata(pbxContent: string): {

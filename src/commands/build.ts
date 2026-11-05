@@ -80,7 +80,7 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   };
 
   logger.info(`Dispatching workflow "${config.github.workflow}" on branch "${branchToBuild}" [Request: ${requestId}]...`);
-  await ghClient.triggerWorkflow(config.github.workflow, branchToBuild, dispatchInputs, cwd);
+  await ghClient.triggerWorkflow(config.github.workflow, branchToBuild, dispatchInputs, projectRoot);
   logger.success('Workflow dispatched successfully.');
 
   if (options.wait === false) {
@@ -95,7 +95,7 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   const targetRun = await runPoller.pollUntilCompletion({
     workflow: config.github.workflow,
     requestId,
-    cwd,
+    cwd: projectRoot,
     baseIntervalMs: 10000,
     maxTimeoutMs: (config.build.timeout_minutes || 25) * 60 * 1000,
     onProgress: (progress) => {
@@ -117,7 +117,7 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   // STAGE 6: Artifact Download & Checksum Verification
   logger.stage(6, 7, 'Artifact Download & Checksum Verification');
   const artifactName = `cloudipa-artifact-${requestId}`;
-  const outDir = path.resolve(cwd, config.output.directory);
+  const outDir = path.resolve(projectRoot, config.output.directory);
   if (!fs.existsSync(outDir)) {
     fs.mkdirSync(outDir, { recursive: true });
   }
@@ -128,7 +128,7 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   }
 
   logger.info(`Downloading build artifact "${artifactName}" (Run #${targetRun.databaseId})...`);
-  await ghClient.downloadArtifact(targetRun.databaseId, artifactName, downloadTempDir, cwd);
+  await ghClient.downloadArtifact(targetRun.databaseId, artifactName, downloadTempDir, projectRoot);
 
   // Search downloaded files
   const downloadedFiles = fs.readdirSync(downloadTempDir);

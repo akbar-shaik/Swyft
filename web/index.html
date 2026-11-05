@@ -614,10 +614,13 @@
           </div>
 
           <!-- Error Diagnostic Card -->
-          <div class="error-diagnostic-card" id="errorDiagnosticCard">
-            <div class="error-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
-              Build Execution Diagnostics
+          <div class="error-diagnostic-card" id="errorDiagnosticCard" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <div class="error-title" style="margin-bottom: 0;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+                Build Execution Diagnostics
+              </div>
+              <span id="errorCategoryBadge" style="font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(255, 68, 102, 0.3); background: rgba(255, 68, 102, 0.15); color: #ff4466; text-transform: uppercase;">CODE & COMPILER ERROR</span>
             </div>
             <div id="errorText" style="font-family: var(--mono-font); font-size: 0.88rem; color: #ff8099; margin-top: 4px;"></div>
             <div class="error-fix" id="errorFixText"></div>
@@ -861,6 +864,23 @@
       }
     });
 
+    const IGNORE_PATTERNS = [
+      /(?:^|\/)\.git(?:$|\/)/i,
+      /(?:^|\/)DerivedData(?:$|\/)/i,
+      /(?:^|\/)build(?:$|\/)/i,
+      /(?:^|\/)\.dart_tool(?:$|\/)/i,
+      /(?:^|\/)xcuserdata(?:$|\/)/i,
+      /(?:^|\/)node_modules(?:$|\/)/i,
+      /(?:^|\/)android(?:$|\/)/i,
+      /(?:^|\/)\.gradle(?:$|\/)/i,
+      /(?:^|\/)\.idea(?:$|\/)/i,
+      /(?:^|\/)\.vscode(?:$|\/)/i,
+      /(?:^|\/)\.expo(?:$|\/)/i,
+      /(?:^|\/)__MACOSX(?:$|\/)/i,
+      /\.DS_Store$/i,
+      /Thumbs\.db$/i,
+      /\.(?:ipa|apk|aab)$/i,
+    ];
     function handleFolderSelect(files) {
       if (!files || files.length === 0) return;
       selectedFiles = Array.from(files);
@@ -868,54 +888,116 @@
 
       let detectedProj = '';
       let detectedScheme = '';
+      let hasIosContainer = false;
 
       for (const f of selectedFiles) {
         const p = f.webkitRelativePath || f.name;
-        if (p.includes('/node_modules/') || p.startsWith('node_modules/') || p.includes('/Pods/') || p.startsWith('Pods/')) continue;
+        if (IGNORE_PATTERNS.some(pat => pat.test(p)) || p.includes('/Pods/') || p.startsWith('Pods/')) continue;
         if (p.includes('.xcodeproj')) {
+          hasIosContainer = true;
           const match = p.match(/([^/]+)\.xcodeproj/);
           if (match && !detectedProj) detectedProj = match[1];
         }
         if (p.includes('.xcworkspace')) {
+          hasIosContainer = true;
           const wMatch = p.match(/([^/]+)\.xcworkspace/);
           if (wMatch && !wMatch[1].startsWith('project') && !detectedProj) detectedProj = wMatch[1];
         }
         if (p.includes('.xcscheme')) {
           const sMatch = p.match(/([^/]+)\.xcscheme/);
-          if (sMatch && !detectedScheme) detectedScheme = sMatch[1];
+          if (sMatch && !detectedScheme && !sMatch[1].startsWith('Pods-')) detectedScheme = sMatch[1];
         }
       }
 
-      if (!detectedProj) {
-        document.getElementById('metaProjectName').textContent = 'iOS Project Folder';
-        document.getElementById('metaFileCount').textContent = `${selectedFiles.length} files detected (auto-detect scheme on runner)`;
-        document.getElementById('schemeInput').value = '';
-        document.getElementById('schemeInput').placeholder = 'Auto-detected on runner';
-        document.getElementById('startBuildBtn').disabled = false;
-        document.getElementById('startBuildBtn').style.opacity = '1';
+      const startBtn = document.getElementById('startBuildBtn');
+      const metaName = document.getElementById('metaProjectName');
+      const metaCount = document.getElementById('metaFileCount');
+      const schemeInput = document.getElementById('schemeInput');
+
+      if (!hasIosContainer) {
+        metaName.textContent = '⚠️ Non-iOS Folder Selected';
+        metaName.style.color = 'var(--accent-red)';
+        metaCount.textContent = 'No .xcodeproj or .xcworkspace found. Select your iOS app root folder (e.g. Flutter "ios/" or React Native "ios/").';
+        schemeInput.value = '';
+        schemeInput.placeholder = 'No scheme available';
+        startBtn.disabled = true;
+        startBtn.style.opacity = '0.5';
       } else {
-        document.getElementById('metaProjectName').textContent = detectedProj;
-        document.getElementById('metaFileCount').textContent = `${selectedFiles.length} files detected`;
-        document.getElementById('schemeInput').value = detectedScheme || detectedProj;
-        document.getElementById('startBuildBtn').disabled = false;
-        document.getElementById('startBuildBtn').style.opacity = '1';
+        metaName.textContent = detectedProj || 'iOS Project';
+        metaName.style.color = '#fff';
+        metaCount.textContent = `${selectedFiles.length} files detected`;
+        schemeInput.value = detectedScheme || detectedProj;
+        schemeInput.placeholder = 'Auto-detected on runner';
+        startBtn.disabled = false;
+        startBtn.style.opacity = '1';
       }
       document.getElementById('metaPanel').style.display = 'block';
     }
 
-    function handleZipSelect(file) {
+    async function handleZipSelect(file) {
       if (!file) return;
       selectedFiles = [];
       selectedZipBlob = file;
 
-      const baseName = file.name.replace(/\.zip$/i, '');
-      document.getElementById('metaProjectName').textContent = file.name;
-      document.getElementById('metaFileCount').textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB ZIP`;
-      document.getElementById('schemeInput').value = '';
-      document.getElementById('schemeInput').placeholder = 'Auto-detected on runner';
-      document.getElementById('startBuildBtn').disabled = false;
-      document.getElementById('startBuildBtn').style.opacity = '1';
+      const startBtn = document.getElementById('startBuildBtn');
+      const metaName = document.getElementById('metaProjectName');
+      const metaCount = document.getElementById('metaFileCount');
+      const schemeInput = document.getElementById('schemeInput');
+
+      metaName.textContent = file.name;
+      metaName.style.color = '#fff';
+      metaCount.textContent = `Scanning ${(file.size / 1024 / 1024).toFixed(2)} MB ZIP...`;
+      schemeInput.value = '';
+      schemeInput.placeholder = 'Inspecting archive...';
+      startBtn.disabled = true;
+      startBtn.style.opacity = '0.5';
       document.getElementById('metaPanel').style.display = 'block';
+
+      try {
+        const zip = await JSZip.loadAsync(file);
+        let hasIos = false;
+        let detectedProj = '';
+        let detectedScheme = '';
+
+        zip.forEach((relPath) => {
+          if (IGNORE_PATTERNS.some(pat => pat.test(relPath)) || relPath.includes('/Pods/')) return;
+          if (relPath.includes('.xcodeproj')) {
+            hasIos = true;
+            const match = relPath.match(/([^/]+)\.xcodeproj/);
+            if (match && !detectedProj) detectedProj = match[1];
+          }
+          if (relPath.includes('.xcworkspace')) {
+            hasIos = true;
+            const match = relPath.match(/([^/]+)\.xcworkspace/);
+            if (match && !match[1].startsWith('project') && !detectedProj) detectedProj = match[1];
+          }
+          if (relPath.includes('.xcscheme')) {
+            const match = relPath.match(/([^/]+)\.xcscheme/);
+            if (match && !detectedScheme && !match[1].startsWith('Pods-')) detectedScheme = match[1];
+          }
+        });
+
+        if (!hasIos) {
+          metaName.textContent = '⚠️ Non-iOS ZIP Archive';
+          metaName.style.color = 'var(--accent-red)';
+          metaCount.textContent = 'No .xcodeproj or .xcworkspace found in archive. Please upload an iOS project archive.';
+          schemeInput.placeholder = 'No scheme available';
+          startBtn.disabled = true;
+          startBtn.style.opacity = '0.5';
+        } else {
+          metaName.textContent = detectedProj || file.name;
+          metaCount.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB ZIP (iOS project verified)`;
+          schemeInput.value = detectedScheme || detectedProj;
+          schemeInput.placeholder = 'Auto-detected on runner';
+          startBtn.disabled = false;
+          startBtn.style.opacity = '1';
+        }
+      } catch (err) {
+        metaCount.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB ZIP`;
+        schemeInput.placeholder = 'Auto-detected on runner';
+        startBtn.disabled = false;
+        startBtn.style.opacity = '1';
+      }
     }
 
     async function startCloudBuild() {
@@ -936,21 +1018,7 @@
       // In-browser smart directory zipping & deflate compression
       if (!zipBlob && selectedFiles.length > 0) {
         const zip = new JSZip();
-        const IGNORE_PATTERNS = [
-          /\/\.git(\/|$)/i,
-          /^\.git(\/|$)/i,
-          /\/DerivedData(\/|$)/i,
-          /^DerivedData(\/|$)/i,
-          /\/build(\/|$)/i,
-          /^build(\/|$)/i,
-          /\/\.dart_tool(\/|$)/i,
-          /^\.dart_tool(\/|$)/i,
-          /\/xcuserdata(\/|$)/i,
-          /^xcuserdata(\/|$)/i,
-          /\/node_modules(\/|$)/i,
-          /^node_modules(\/|$)/i,
-          /\.DS_Store$/i,
-        ];
+        // Uses top-level IGNORE_PATTERNS
 
         let addedFiles = 0;
         for (const file of selectedFiles) {
@@ -1054,7 +1122,24 @@
           } else if (data.status === 'failed') {
             clearInterval(timerInterval);
             document.getElementById('errorDiagnosticCard').style.display = 'block';
-            document.getElementById('errorText').textContent = data.error || data.message || 'Build failed.';
+
+            const catBadge = document.getElementById('errorCategoryBadge');
+            if (catBadge) {
+              if (data.errorCategory === 'PROJECT_ERROR') {
+                catBadge.textContent = 'PROJECT CONFIGURATION ERROR';
+                catBadge.style.background = 'rgba(255, 170, 0, 0.15)';
+                catBadge.style.color = '#ffaa00';
+                catBadge.style.borderColor = 'rgba(255, 170, 0, 0.3)';
+              } else {
+                catBadge.textContent = 'CODE & COMPILER ERROR';
+                catBadge.style.background = 'rgba(255, 68, 102, 0.15)';
+                catBadge.style.color = '#ff4466';
+                catBadge.style.borderColor = 'rgba(255, 68, 102, 0.3)';
+              }
+            }
+
+            const errorTextEl = document.getElementById('errorText');
+            errorTextEl.innerHTML = `<pre style="white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 0.82rem; line-height: 1.5; max-height: 300px; overflow-y: auto;">${escapeHtml(data.error || data.message || 'Build failed.')}</pre>`;
             document.getElementById('errorFixText').textContent = data.fixSuggestion || 'Check your Xcode schemes, files, and dependencies.';
           } else {
             setTimeout(poll, 4000);

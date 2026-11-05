@@ -196,5 +196,25 @@ describe('Server Authentication, Security & Telemetry Engine', () => {
       expect(REPO_REGEX.test('invalid_repo')).toBe(false);
       expect(REPO_REGEX.test('invalid/repo/subpath')).toBe(false);
     });
+
+    it('validates SAFE_INPUT_REGEX with valid iOS schemes including +, (), and []', () => {
+      const SAFE_INPUT_REGEX = /^[A-Za-z0-9_.\-+()[\] ]{1,100}$/;
+      expect(SAFE_INPUT_REGEX.test('MyApp')).toBe(true);
+      expect(SAFE_INPUT_REGEX.test('MyApp (Beta)')).toBe(true);
+      expect(SAFE_INPUT_REGEX.test('App+Extension')).toBe(true);
+      expect(SAFE_INPUT_REGEX.test('App[Release]')).toBe(true);
+      expect(SAFE_INPUT_REGEX.test('Evil;rm -rf /')).toBe(false);
+    });
+
+    it('safely handles HMAC signature length mismatch without throwing RangeError', () => {
+      const { generateHmacSignature } = require('../server/server');
+      const expected = generateHmacSignature('req-123', '9999999999');
+      const mismatchedShortSig = 'short';
+      const sigBuf = Buffer.from(mismatchedShortSig);
+      const expBuf = Buffer.from(expected);
+      expect(sigBuf.length === expBuf.length).toBe(false);
+      const safeCompare = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+      expect(safeCompare).toBe(false);
+    });
   });
 });

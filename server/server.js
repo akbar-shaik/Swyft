@@ -46,6 +46,22 @@ const REPO_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SAFE_INPUT_REGEX = /^[A-Za-z0-9_.\-+()[\] ]{1,100}$/;
 const ALLOWED_RUNNERS = new Set(['macos-15', 'macos-14']);
 const ALLOWED_CONFIGS = new Set(['Release', 'Debug']);
+const SERVER_IGNORE_PATTERNS = [
+  /(?:^|\/)node_modules(?:\/|$)/i,
+  /(?:^|\/)\.git(?:\/|$)/i,
+  /(?:^|\/)DerivedData(?:\/|$)/i,
+  /(?:^|\/)build(?:\/|$)/i,
+  /(?:^|\/)\.dart_tool(?:\/|$)/i,
+  /(?:^|\/)android(?:\/|$)/i,
+  /(?:^|\/)\.gradle(?:\/|$)/i,
+  /(?:^|\/)\.idea(?:\/|$)/i,
+  /(?:^|\/)\.vscode(?:\/|$)/i,
+  /(?:^|\/)__MACOSX(?:\/|$)/i,
+  /(?:^|\/)\.DS_Store$/i,
+  /(?:^|\/)Thumbs\.db$/i,
+  /\.(?:ipa|apk|aab)$/i,
+];
+
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -619,23 +635,54 @@ app.post('/api/build', upload.single('projectZip'), async (req, res) => {
     const permanentUploadPath = path.join(UPLOADS_DIR, `${requestId}.zip`);
     fs.renameSync(file.path, permanentUploadPath);
 
-    // Inspect archive for schemes and project name
+    // Inspect archive, sanitize bloat, and validate iOS project presence
     let detectedScheme = scheme;
+    let hasIosProject = false;
+    let modifiedZip = false;
 
     try {
       const zip = new AdmZip(permanentUploadPath);
       const entries = zip.getEntries();
+      const sanitizedZip = new AdmZip();
+
       for (const entry of entries) {
         const name = entry.entryName;
+        const isIgnored = SERVER_IGNORE_PATTERNS.some(pat => pat.test(name));
+        if (isIgnored) {
+          modifiedZip = true;
+          continue;
+        }
+
+        if (name.includes('.xcodeproj') || name.includes('.xcworkspace')) {
+          hasIosProject = true;
+        }
+
         if (name.includes('xcshareddata/xcschemes/') && name.endsWith('.xcscheme')) {
           const schemeName = path.basename(name, '.xcscheme');
-          if (!detectedScheme) {
+          if (!detectedScheme && !schemeName.startsWith('Pods-')) {
             detectedScheme = schemeName;
           }
         }
+
+        if (!entry.isDirectory) {
+          sanitizedZip.addFile(name, entry.getData(), entry.comment);
+        }
+      }
+
+      if (!hasIosProject) {
+        if (fs.existsSync(permanentUploadPath)) fs.unlinkSync(permanentUploadPath);
+        return res.status(400).json({
+          error: 'No Xcode project (.xcodeproj) or workspace (.xcworkspace) found in uploaded archive.',
+          errorCategory: 'PROJECT_ERROR',
+          fixSuggestion: 'Select the root directory of your iOS app (e.g. the folder containing YourApp.xcodeproj, or the "ios" directory of your Flutter / React Native project), not an isolated pod or library.',
+        });
+      }
+
+      if (modifiedZip) {
+        sanitizedZip.writeZip(permanentUploadPath);
       }
     } catch (err) {
-      console.warn('Zip parsing note:', err.message);
+      console.warn('Zip sanitization note:', err.message);
     }
 
     const effectiveScheme = detectedScheme || '';
