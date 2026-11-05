@@ -1,66 +1,63 @@
 name: CloudIPA iOS Build
 
-run-name: "CloudIPA Build [${{ inputs.request_id }}] (${{ inputs.scheme || 'auto' }})"
-
 on:
   workflow_dispatch:
     inputs:
       request_id:
-        description: 'Unique build correlation ID'
+        description: 'Unique build request identifier'
         required: true
         type: string
       project_path:
-        description: 'Path to iOS project root directory'
+        description: 'Relative path to Xcode project or workspace'
         required: false
         default: '.'
         type: string
       archive_url:
-        description: 'Optional temporary signed URL to download uploaded project archive'
+        description: 'Signed URL to fetch uploaded project archive'
         required: false
         default: ''
         type: string
       scheme:
-        description: 'Xcode scheme name to compile'
+        description: 'Xcode build scheme'
         required: false
         default: ''
         type: string
       configuration:
-        description: 'Build configuration (Release/Debug)'
+        description: 'Build configuration (Release or Debug)'
         required: false
         default: 'Release'
         type: string
       runner:
-        description: 'GitHub-hosted macOS runner label'
+        description: 'macOS runner label'
         required: false
         default: 'macos-15'
         type: string
       xcode_version:
-        description: 'Xcode version to select (e.g. 16.0, 15.4) or auto'
+        description: 'Specific Xcode version or auto'
         required: false
         default: 'auto'
         type: string
       artifact_name:
-        description: 'Base name of generated IPA'
+        description: 'Output artifact base name'
         required: false
         default: 'App'
         type: string
-
-permissions:
-  contents: read
 
 concurrency:
   group: cloudipa-${{ github.workflow }}-${{ inputs.request_id }}
   cancel-in-progress: false
 
 jobs:
-  build-unsigned-ipa:
-    name: Build Unsigned IPA
+  build-ipa:
+    name: Build Unsigned iOS Application
     runs-on: ${{ inputs.runner || 'macos-15' }}
-    timeout-minutes: 25
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Fetch Uploaded Web Studio Archive
         if: ${{ inputs.archive_url != '' }}
@@ -74,6 +71,8 @@ jobs:
           echo "Downloading project archive from signed URL..."
           curl -fsSL "$INPUT_ARCHIVE_URL" -o "$RUNNER_TEMP/upload.zip"
           unzip -q -o "$RUNNER_TEMP/upload.zip" -d "$WORKSPACE_DIR"
+          rm -rf "$WORKSPACE_DIR/__MACOSX"
+          find "$WORKSPACE_DIR" -name ".DS_Store" -delete 2>/dev/null || true
           echo "Project archive successfully unpacked into $WORKSPACE_DIR"
 
       - name: Select Xcode Version
@@ -96,48 +95,67 @@ jobs:
         id: resolve
         env:
           INPUT_SCHEME: ${{ inputs.scheme }}
+          INPUT_CONFIG: ${{ inputs.configuration }}
         run: |
           set -euo pipefail
           SEARCH_DIR="$RUNNER_TEMP/workspace"
-          if [ ! -d "$SEARCH_DIR" ]; then
-            SEARCH_DIR="."
-          fi
+          [ -d "$SEARCH_DIR" ] || SEARCH_DIR="."
           cd "$SEARCH_DIR"
+          rm -rf __MACOSX 2>/dev/null || true
 
-          # Search for primary app workspace or project, prioritizing non-dependency targets
-          WORKSPACE_FILE=$(find . -name "*.xcworkspace" ! -path "*.xcodeproj/*" ! -path "*/node_modules/*" ! -path "*/Pods/*" | head -n 1 || true)
-          if [ -z "$WORKSPACE_FILE" ]; then
-            WORKSPACE_FILE=$(find . -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1 || true)
-          fi
+          PROJECT_FILE=$(find . -name "*.xcodeproj" ! -path "*/node_modules/*" ! -path "*/Pods/*" ! -path "*/Carthage/*" ! -path "*/.build/*" ! -path "*/__MACOSX/*" \
+            | awk -F'/' '{print NF, $0}' | sort -n | head -n 1 | cut -d' ' -f2- || true)
+          WORKSPACE_FILE=$(find . -name "*.xcworkspace" ! -path "*.xcodeproj/*" ! -path "*/node_modules/*" ! -path "*/Pods/*" ! -path "*/Carthage/*" ! -path "*/__MACOSX/*" \
+            | awk -F'/' '{print NF, $0}' | sort -n | head -n 1 | cut -d' ' -f2- || true)
 
-          PROJECT_FILE=$(find . -name "*.xcodeproj" ! -path "*/node_modules/*" ! -path "*/Pods/*" | head -n 1 || true)
-          if [ -z "$PROJECT_FILE" ]; then
-            PROJECT_FILE=$(find . -name "*.xcodeproj" | head -n 1 || true)
-          fi
-
-          if [ -n "$WORKSPACE_FILE" ]; then
-            WORK_DIR=$(dirname "$WORKSPACE_FILE")
-            CONTAINER_TYPE="-workspace"
-            CONTAINER_PATH=$(basename "$WORKSPACE_FILE")
-          elif [ -n "$PROJECT_FILE" ]; then
-            WORK_DIR=$(dirname "$PROJECT_FILE")
-            CONTAINER_TYPE="-project"
-            CONTAINER_PATH=$(basename "$PROJECT_FILE")
-          else
-            echo "::error::No Xcode project (.xcodeproj) or workspace (.xcworkspace) found in uploaded folder." | tee "$RUNNER_TEMP/build.log"
+          if [ -z "$WORKSPACE_FILE" ] && [ -z "$PROJECT_FILE" ]; then
+            echo "::error::[PROJECT_ERROR] No Xcode project (.xcodeproj) or workspace (.xcworkspace) found." | tee "$RUNNER_TEMP/build.log"
             exit 1
           fi
 
+          WORK_DIR=$(dirname "${WORKSPACE_FILE:-$PROJECT_FILE}")
           cd "$WORK_DIR"
+
+          if [ -f "Podfile" ] && { [ ! -d "Pods" ] || ! cmp -s Podfile.lock Pods/Manifest.lock 2>/dev/null; }; then
+            echo "Podfile detected with missing/outdated Pods; running pod install..."
+            pod install --repo-update || pod install || true
+            WORKSPACE_FILE=$(find . -maxdepth 1 -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1 || true)
+          fi
+
+          PROJ_BASE=$( [ -n "$PROJECT_FILE" ] && basename "$PROJECT_FILE" || echo "" )
+          PROJ_JSON=$( [ -n "$PROJ_BASE" ] && [ -d "$PROJ_BASE" ] && xcodebuild -project "$PROJ_BASE" -list -json 2>/dev/null || echo "{}" )
+
+          if [ -n "$WORKSPACE_FILE" ]; then
+            CONTAINER_TYPE="-workspace"; CONTAINER_PATH=$(basename "$WORKSPACE_FILE")
+          else
+            CONTAINER_TYPE="-project"; CONTAINER_PATH=$(basename "$PROJECT_FILE")
+          fi
+
           LIST_JSON=$(xcodebuild "$CONTAINER_TYPE" "$CONTAINER_PATH" -list -json 2>/dev/null || echo "{}")
-          SCHEME=$(printf '%s' "$LIST_JSON" | jq -r --arg req "$INPUT_SCHEME" '
-            ((.workspace.schemes // []) + (.project.schemes // []) + (.project.targets // [])) as $all |
-            if ($req != "" and ($all | index($req))) then $req else ($all[0] // empty) end
+          SCHEME=$(jq -rn --arg req "$INPUT_SCHEME" --argjson ws "$LIST_JSON" --argjson pr "$PROJ_JSON" '
+            (($pr.project.schemes // []) + ($pr.project.targets // [])) as $appCandidates |
+            (($ws.workspace.schemes // []) + ($ws.project.schemes // []) + $appCandidates)
+            | map(select(. != null and . != "" and (test("^(Pods-|Pods_)") | not) and (test("(Tests|UITests)$") | not))) as $filtered |
+            if ($req != "" and ($filtered | index($req))) then $req
+            elif (($appCandidates | map(select((test("(Tests|UITests)$") | not))) | length) > 0) then
+              ($appCandidates | map(select((test("(Tests|UITests)$") | not)))[0])
+            else ($filtered[0] // empty) end
           ')
 
-          [ -n "$SCHEME" ] || { echo "::error::No buildable scheme or target found in Xcode project." | tee "$RUNNER_TEMP/build.log"; exit 1; }
+          [ -n "$SCHEME" ] || { echo "::error::[PROJECT_ERROR] No buildable application scheme or target found in Xcode project." | tee "$RUNNER_TEMP/build.log"; exit 1; }
 
-          echo "Target scheme resolved to: $SCHEME"
+          # Validate configuration exists, fallback to first available if custom-named
+          CONFIG="$INPUT_CONFIG"
+          AVAILABLE_CONFIGS=$(echo "$LIST_JSON" | jq -r '(.workspace.configurations // .project.configurations // [])[]' 2>/dev/null || true)
+          if [ -n "$AVAILABLE_CONFIGS" ] && ! echo "$AVAILABLE_CONFIGS" | grep -qx "$CONFIG"; then
+            FALLBACK_CONFIG=$(echo "$AVAILABLE_CONFIGS" | head -n 1)
+            if [ -n "$FALLBACK_CONFIG" ]; then
+              echo "Requested configuration '$CONFIG' not found; using project configuration '$FALLBACK_CONFIG'"
+              CONFIG="$FALLBACK_CONFIG"
+            fi
+          fi
+
+          echo "Target scheme resolved to: $SCHEME (Configuration: $CONFIG)"
           echo "Working directory: $(pwd)"
 
           {
@@ -145,6 +163,7 @@ jobs:
             echo "container_type=$CONTAINER_TYPE"
             echo "container_path=$CONTAINER_PATH"
             echo "target_dir=$(pwd)"
+            echo "config=$CONFIG"
           } >> "$GITHUB_OUTPUT"
 
       - name: Compile Unsigned iOS Application
@@ -154,7 +173,7 @@ jobs:
           SCHEME: ${{ steps.resolve.outputs.scheme }}
           CONTAINER_TYPE: ${{ steps.resolve.outputs.container_type }}
           CONTAINER_PATH: ${{ steps.resolve.outputs.container_path }}
-          CONFIG: ${{ inputs.configuration }}
+          CONFIG: ${{ steps.resolve.outputs.config }}
         run: |
           set -uo pipefail
           DERIVED_DIR="$RUNNER_TEMP/cloudipa-derived"
@@ -175,9 +194,39 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
             COMPILER_INDEX_STORE_ENABLE=NO | tee "$RUNNER_TEMP/build.log"
           BUILD_EXIT=${PIPESTATUS[0]}
           set -e
+
+          if [ $BUILD_EXIT -ne 0 ] && grep -q -i -E "(entitlements|provisioning profile)" "$RUNNER_TEMP/build.log"; then
+            echo "Initial build failed on entitlements/provisioning; retrying with CODE_SIGN_ENTITLEMENTS=\"\"..."
+            set +e
+            xcodebuild build \
+              "$CONTAINER_TYPE" "$CONTAINER_PATH" \
+              -scheme "$SCHEME" \
+              -configuration "$CONFIG" \
+              -sdk iphoneos \
+              -destination "generic/platform=iOS" \
+              -derivedDataPath "$DERIVED_DIR" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              AD_HOC_CODE_SIGNING_ALLOWED=YES \
+              PROVISIONING_PROFILE_SPECIFIER="" \
+              PROVISIONING_PROFILE="" \
+              DEVELOPMENT_TEAM="" \
+              CODE_SIGN_ENTITLEMENTS="" \
+              -skipMacroValidation \
+              -skipPackagePluginValidation \
+              COMPILER_INDEX_STORE_ENABLE=NO | tee "$RUNNER_TEMP/build.log"
+            BUILD_EXIT=${PIPESTATUS[0]}
+            set -e
+          fi
 
           if [ $BUILD_EXIT -ne 0 ]; then
             echo "::error::xcodebuild compilation failed with exit code $BUILD_EXIT"
@@ -185,7 +234,10 @@ jobs:
           fi
 
           PRODUCTS_DIR="$DERIVED_DIR/Build/Products/${CONFIG}-iphoneos"
-          APP_PATH=$(find "$PRODUCTS_DIR" -maxdepth 2 -name "*.app" -type d | head -n 1 || true)
+          APP_PATH=$(find "$PRODUCTS_DIR" -maxdepth 1 -name "*.app" -type d | head -n 1 || true)
+          if [ -z "$APP_PATH" ]; then
+            APP_PATH=$(find "$PRODUCTS_DIR" -name "*.app" ! -path "*.app/*" -type d | head -n 1 || true)
+          fi
 
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "::error::Compiled .app bundle not found in $PRODUCTS_DIR"
@@ -202,7 +254,7 @@ jobs:
           ARTIFACT_NAME: ${{ inputs.artifact_name }}
           REQUEST_ID: ${{ inputs.request_id }}
           SCHEME: ${{ steps.resolve.outputs.scheme }}
-          CONFIG: ${{ inputs.configuration }}
+          CONFIG: ${{ steps.resolve.outputs.config }}
           RUNNER_LABEL: ${{ inputs.runner }}
         run: |
           set -euo pipefail
@@ -264,14 +316,19 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP"
           ERRORS=""
+          ERROR_CAT="CODE_AND_BUILD_ERROR"
           if [ -f "$RUNNER_TEMP/build.log" ]; then
-            ERRORS=$(grep -E "(\.(swift|m|mm|c|cpp|h|xib|storyboard):[0-9]+:[0-9]+: (error|fatal error):|ld: |clang: error:|xcodebuild: error:|::error::)" "$RUNNER_TEMP/build.log" \
-              | sed "s|$RUNNER_TEMP/workspace/||g" | sed "s|::error::||g" | awk '!seen[$0]++' | tail -n 40 || true)
+            if grep -q "\[PROJECT_ERROR\]" "$RUNNER_TEMP/build.log"; then
+              ERROR_CAT="PROJECT_ERROR"
+            fi
+            ERRORS=$(grep -E "(\.(swift|m|mm|c|cpp|h|xib|storyboard|plist|xcassets)[^:]*:[0-9]*:?[0-9]*: (error|fatal error):|^error:|xcodebuild: error:|clang: error:|ld: |::error::)" "$RUNNER_TEMP/build.log" \
+              | sed "s|$RUNNER_TEMP/workspace/||g" | sed "s|::error::||g" | sed "s|\[PROJECT_ERROR\] ||g" | awk '!seen[$0]++' | tail -n 40 || true)
           fi
           jq -n \
             --arg status "failed" \
+            --arg errorCategory "$ERROR_CAT" \
             --arg compilerErrors "$ERRORS" \
-            '{status: $status, compilerErrors: $compilerErrors}' > "$RUNNER_TEMP/build-info.json"
+            '{status: $status, errorCategory: $errorCategory, compilerErrors: $compilerErrors}' > "$RUNNER_TEMP/build-info.json"
 
       - name: Upload Build Artifacts & Logs
         if: ${{ always() }}

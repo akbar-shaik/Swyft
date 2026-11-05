@@ -34,7 +34,7 @@ const AUTH_SECRET = process.env.AUTH_SECRET || process.env.HMAC_SECRET || 'cloud
 const HMAC_SECRET = process.env.HMAC_SECRET || AUTH_SECRET;
 const API_AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
 let SERVER_GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
-let SERVER_GITHUB_REPO = process.env.GITHUB_REPO || 'akbar-shaik/CloudIPAAA';
+let SERVER_GITHUB_REPO = process.env.GITHUB_REPO || 'akbar-shaik/Swyft';
 
 // Telegram Bot & User Configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '1858623580:AAFiBK43EXj0e2cGkiXZL1ui-DCxtdjlR_A';
@@ -43,7 +43,7 @@ const ALLOWED_CREDENTIAL_1 = process.env.ALLOWED_CREDENTIAL_1 || 'user_Akbar84';
 
 // Strict input validation rules
 const REPO_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const SAFE_INPUT_REGEX = /^[A-Za-z0-9_.\- ]{1,100}$/;
+const SAFE_INPUT_REGEX = /^[A-Za-z0-9_.\-+()[\] ]{1,100}$/;
 const ALLOWED_RUNNERS = new Set(['macos-15', 'macos-14']);
 const ALLOWED_CONFIGS = new Set(['Release', 'Debug']);
 
@@ -337,7 +337,9 @@ app.get('/api/uploads/:requestId', (req, res) => {
   }
 
   const expectedSig = generateHmacSignature(requestId, expires);
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     return res.status(403).json({ error: 'Invalid HMAC signature' });
   }
 
@@ -562,6 +564,7 @@ app.get('/api/build/:id', (req, res) => {
     status: job.status,
     stage: job.stage,
     stageName: job.stageName,
+    errorCategory: job.errorCategory || null,
     message: job.message,
     progressPct: job.progressPct || 0,
     activities: job.activities || [],
@@ -681,16 +684,6 @@ app.post('/api/build', upload.single('projectZip'), async (req, res) => {
 });
 
 async function ensureWorkflowReady(token, repo) {
-  const checkUrl = `https://api.github.com/repos/${repo}/contents/.github/workflows/cloudipa-build.yml`;
-  const checkResp = await fetch(checkUrl, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
-      'User-Agent': 'CloudIPA',
-    },
-  });
-  if (checkResp.ok) return;
-
   const repoResp = await fetch(`https://api.github.com/repos/${repo}`, {
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -702,7 +695,16 @@ async function ensureWorkflowReady(token, repo) {
     throw new Error(`Repository '${repo}' not accessible (${repoResp.status})`);
   }
   const repoData = await repoResp.json();
-  const branch = repoData.default_branch || 'main';
+  const defaultBranch = repoData.default_branch || 'main';
+
+  const checkUrl = `https://api.github.com/repos/${repo}/contents/.github/workflows/cloudipa-build.yml?ref=${defaultBranch}`;
+  const checkResp = await fetch(checkUrl, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'CloudIPA',
+    },
+  });
 
   const candidatePaths = [
     path.join(__dirname, '..', 'templates', 'cloudipa-build.yml'),
@@ -722,25 +724,45 @@ async function ensureWorkflowReady(token, repo) {
     throw new Error('Local workflow template file not found on server.');
   }
 
-  const putResp = await fetch(checkUrl, {
-    method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
-      'User-Agent': 'CloudIPA',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      message: 'ci: auto-heal CloudIPA macOS builder workflow',
-      content: Buffer.from(templateContent, 'utf8').toString('base64'),
-      branch,
-    }),
-  });
-
-  if (!putResp.ok) {
-    const errText = await putResp.text();
-    console.warn(`ensureWorkflowReady warning (${putResp.status}):`, errText);
+  let existingSha = null;
+  let needsUpdate = false;
+  if (checkResp.ok) {
+    const checkData = await checkResp.json();
+    existingSha = checkData.sha;
+    const existingContent = Buffer.from(checkData.content || '', 'base64').toString('utf8');
+    if (existingContent.trim() !== templateContent.trim()) {
+      needsUpdate = true;
+    }
+  } else {
+    needsUpdate = true;
   }
+
+  if (needsUpdate) {
+    const putBody = {
+      message: 'ci: update hardened CloudIPA macOS builder workflow',
+      content: Buffer.from(templateContent, 'utf8').toString('base64'),
+      branch: defaultBranch,
+    };
+    if (existingSha) putBody.sha = existingSha;
+
+    const putResp = await fetch(`https://api.github.com/repos/${repo}/contents/.github/workflows/cloudipa-build.yml`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(putBody),
+    });
+
+    if (!putResp.ok) {
+      const errText = await putResp.text();
+      console.warn(`ensureWorkflowReady warning (${putResp.status}):`, errText);
+    }
+  }
+
+  return defaultBranch;
 }
 
 async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, configuration, runner) {
@@ -749,17 +771,18 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
   try {
     recordActivity(job, 'info', 2, `Verifying runner workflow on ${repo}...`, '', 20);
+    let defaultBranch = 'main';
     try {
-      await ensureWorkflowReady(token, repo);
+      defaultBranch = (await ensureWorkflowReady(token, repo)) || 'main';
     } catch (healErr) {
       console.warn('ensureWorkflowReady notice:', healErr.message);
     }
 
-    recordActivity(job, 'info', 2, `Dispatching GitHub Actions workflow on ${repo}...`, `Runner: ${runner}`, 25);
+    recordActivity(job, 'info', 2, `Dispatching GitHub Actions workflow on ${repo}...`, `Runner: ${runner} (branch: ${defaultBranch})`, 25);
 
     const dispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/cloudipa-build.yml/dispatches`;
     const dispatchBody = JSON.stringify({
-      ref: 'main',
+      ref: defaultBranch,
       inputs: {
         request_id: requestId,
         project_path: '.',
@@ -772,16 +795,24 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
       },
     });
 
-    const dispatchResp = await fetch(dispatchUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'CloudIPA-Web-Builder',
-        'Content-Type': 'application/json',
-      },
-      body: dispatchBody,
-    });
+    let dispatchResp = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      dispatchResp = await fetch(dispatchUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'CloudIPA-Web-Builder',
+          'Content-Type': 'application/json',
+        },
+        body: dispatchBody,
+      });
+      if (dispatchResp.ok) break;
+      if (attempt < 3 && (dispatchResp.status === 404 || dispatchResp.status === 422)) {
+        console.warn(`Dispatch attempt ${attempt} returned ${dispatchResp.status}, retrying in 3s...`);
+        await sleep(3000);
+      }
+    }
 
     if (!dispatchResp.ok) {
       const errText = await dispatchResp.text();
@@ -963,6 +994,22 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
     job.stageName = 'Build Failed';
     job.progressPct = 100;
     job.elapsedSeconds = Math.floor((Date.now() - job.startTime) / 1000);
+
+    if (buildInfo && buildInfo.errorCategory) {
+      job.errorCategory = buildInfo.errorCategory;
+    } else if (compilerErrors.some(e => e.includes('No Xcode project') || e.includes('No buildable scheme'))) {
+      job.errorCategory = 'PROJECT_ERROR';
+    } else {
+      job.errorCategory = 'CODE_AND_BUILD_ERROR';
+    }
+
+    if (buildInfo && buildInfo.errorCategory) {
+      job.errorCategory = buildInfo.errorCategory;
+    } else if (compilerErrors.some(e => e.includes('No Xcode project') || e.includes('No buildable scheme'))) {
+      job.errorCategory = 'PROJECT_ERROR';
+    } else {
+      job.errorCategory = 'CODE_AND_BUILD_ERROR';
+    }
 
     if (compilerErrors.length > 0) {
       job.error = compilerErrors.join('\n');
