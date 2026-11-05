@@ -104,8 +104,16 @@ jobs:
           fi
           cd "$SEARCH_DIR"
 
-          WORKSPACE_FILE=$(find . -maxdepth 5 -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1 || true)
-          PROJECT_FILE=$(find . -maxdepth 5 -name "*.xcodeproj" | head -n 1 || true)
+          # Search for primary app workspace or project, prioritizing non-dependency targets
+          WORKSPACE_FILE=$(find . -name "*.xcworkspace" ! -path "*.xcodeproj/*" ! -path "*/node_modules/*" ! -path "*/Pods/*" | head -n 1 || true)
+          if [ -z "$WORKSPACE_FILE" ]; then
+            WORKSPACE_FILE=$(find . -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1 || true)
+          fi
+
+          PROJECT_FILE=$(find . -name "*.xcodeproj" ! -path "*/node_modules/*" ! -path "*/Pods/*" | head -n 1 || true)
+          if [ -z "$PROJECT_FILE" ]; then
+            PROJECT_FILE=$(find . -name "*.xcodeproj" | head -n 1 || true)
+          fi
 
           if [ -n "$WORKSPACE_FILE" ]; then
             WORK_DIR=$(dirname "$WORKSPACE_FILE")

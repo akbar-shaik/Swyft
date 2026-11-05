@@ -951,8 +951,12 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
     // Compilation failed or IPA not found
     let compilerErrors = [];
-    if (buildInfo && Array.isArray(buildInfo.compilerErrors) && buildInfo.compilerErrors.length > 0) {
-      compilerErrors = buildInfo.compilerErrors;
+    if (buildInfo) {
+      if (Array.isArray(buildInfo.compilerErrors)) {
+        compilerErrors = buildInfo.compilerErrors.map(s => String(s || '').trim()).filter(Boolean);
+      } else if (typeof buildInfo.compilerErrors === 'string' && buildInfo.compilerErrors.trim()) {
+        compilerErrors = buildInfo.compilerErrors.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      }
     }
 
     job.status = 'failed';
@@ -962,8 +966,17 @@ async function runBuildPipeline(requestId, archiveUrl, token, repo, scheme, conf
 
     if (compilerErrors.length > 0) {
       job.error = compilerErrors.join('\n');
-      job.message = `${compilerErrors.length} compiler error(s) found in iOS source code.`;
-      job.fixSuggestion = "Review the Swift/Xcode compiler errors below and fix the failing files in your project.";
+      const errLower = job.error.toLowerCase();
+      if (errLower.includes('no xcode project') || errLower.includes('no .xcworkspace')) {
+        job.message = 'No Xcode project found in uploaded files.';
+        job.fixSuggestion = 'Select the root directory of your iOS app (e.g. the folder containing YourApp.xcodeproj, or the "ios" directory of your Flutter / React Native project), not an isolated pod or library.';
+      } else if (errLower.includes('no buildable scheme')) {
+        job.message = 'No buildable Xcode scheme found.';
+        job.fixSuggestion = 'In Xcode, ensure your target scheme is marked as "Shared" under Product -> Scheme -> Manage Schemes so it is included in your project files.';
+      } else {
+        job.message = `${compilerErrors.length} compiler error(s) found in iOS source code.`;
+        job.fixSuggestion = 'Review the Swift/Xcode compiler errors below and fix the failing files in your project.';
+      }
       recordActivity(job, 'error', job.stage, `Compiler error: ${compilerErrors[0]}`, compilerErrors.slice(1).join('\n') || '');
     } else {
       const conclusion = targetRun ? targetRun.conclusion : 'timeout';

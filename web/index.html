@@ -871,6 +871,7 @@
 
       for (const f of selectedFiles) {
         const p = f.webkitRelativePath || f.name;
+        if (p.includes('/node_modules/') || p.startsWith('node_modules/') || p.includes('/Pods/') || p.startsWith('Pods/')) continue;
         if (p.includes('.xcodeproj')) {
           const match = p.match(/([^/]+)\.xcodeproj/);
           if (match && !detectedProj) detectedProj = match[1];
