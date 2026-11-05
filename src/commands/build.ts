@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { loadConfig } from '../config/loader';
+import { loadConfig, findConfigFile } from '../config/loader';
 import { iosDetector } from '../detectors/ios-detector';
 import { gitClient } from '../git/git-client';
 import { ghClient } from '../github/gh-client';
@@ -41,10 +41,7 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   logger.success(`Git repository ready: ${gitStatus.repoOwner}/${gitStatus.repoName} (Branch: ${gitStatus.currentBranch})`);
 
   // Load configuration with overrides
-  const config = loadConfig(undefined, {
-    ...options,
-    ref: options.ref || gitStatus.currentBranch,
-  });
+  const config = loadConfig(findConfigFile(projectRoot) || undefined, options);
 
   // Inspect local iOS project
   let detectedScheme = config.project.scheme;
@@ -69,10 +66,12 @@ export async function runBuild(projectPathArg?: string, options: BuildOptions = 
   logger.stage(3, 7, 'Remote Workflow Dispatch');
   const requestId = crypto.randomUUID();
   const branchToBuild = options.ref || config.github.branch || gitStatus.currentBranch || 'main';
+  const repoRoot = gitStatus.repoRoot || cwd;
+  const normalizedProjectPath = path.relative(repoRoot, projectRoot).replace(/\\/g, '/') || '.';
 
   const dispatchInputs: Record<string, string> = {
     request_id: requestId,
-    project_path: path.relative(cwd, projectRoot) || '.',
+    project_path: normalizedProjectPath,
     scheme: detectedScheme || '',
     configuration: config.project.configuration,
     runner: config.build.runner,

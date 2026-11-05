@@ -108,11 +108,16 @@ export class GitHubClient {
     outputDir: string,
     cwd: string = process.cwd()
   ): Promise<void> {
-    const args = ['run', 'download', String(runId), '-n', artifactName, '--dir', outputDir];
+    const args = ['run', 'download', String(runId)];
+    if (artifactName && artifactName.trim()) {
+      args.push('-n', artifactName.trim());
+    }
+    args.push('--dir', outputDir);
+
     const res = await runCommand('gh', args, { cwd });
     if (res.exitCode !== 0) {
       throw new Error(
-        `Failed to download artifact "${artifactName}" for run #${runId}:\n${res.stderr || res.stdout}`
+        `Failed to download artifact${artifactName ? ` "${artifactName}"` : ''} for run #${runId}:\n${res.stderr || res.stdout}`
       );
     }
   }

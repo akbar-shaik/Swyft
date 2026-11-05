@@ -6,16 +6,27 @@ export class GitClient {
     return checkBinaryAvailable('git');
   }
 
+  public async getRepoRoot(cwd: string = process.cwd()): Promise<string> {
+    const res = await runCommand('git', ['rev-parse', '--show-toplevel'], { cwd });
+    if (res.exitCode === 0 && res.stdout.trim()) {
+      return res.stdout.trim();
+    }
+    return cwd;
+  }
+
   public async getGitStatus(cwd: string = process.cwd()): Promise<GitStatus> {
     const isRepoRes = await runCommand('git', ['rev-parse', '--is-inside-work-tree'], { cwd });
     if (isRepoRes.exitCode !== 0 || isRepoRes.stdout.trim() !== 'true') {
       return {
         isRepo: false,
         currentBranch: '',
+        hasRemoteBranch: false,
         hasUncommitted: false,
         unpushedCommitCount: 0,
       };
     }
+
+    const repoRoot = await this.getRepoRoot(cwd);
 
     // Current branch
     const branchRes = await runCommand('git', ['branch', '--show-current'], { cwd });
@@ -44,21 +55,39 @@ export class GitClient {
     const statusRes = await runCommand('git', ['status', '--porcelain'], { cwd });
     const hasUncommitted = statusRes.stdout.trim().length > 0;
 
-    // Unpushed commits
+    // Remote branch tracking & unpushed commits
     let unpushedCommitCount = 0;
+    let hasRemoteBranch = false;
+
     const upstreamCheck = await runCommand('git', ['rev-parse', '--verify', '@{u}'], { cwd });
     if (upstreamCheck.exitCode === 0) {
+      hasRemoteBranch = true;
       const revListRes = await runCommand('git', ['rev-list', '--count', '@{u}..HEAD'], { cwd });
       const count = parseInt(revListRes.stdout.trim(), 10);
       if (!isNaN(count)) {
         unpushedCommitCount = count;
       }
+    } else if (currentBranch) {
+      // Check if branch exists on remote despite missing local tracking
+      const lsRemoteRes = await runCommand('git', ['ls-remote', '--exit-code', '--heads', 'origin', currentBranch], { cwd });
+      if (lsRemoteRes.exitCode === 0) {
+        hasRemoteBranch = true;
+        const revListRes = await runCommand('git', ['rev-list', '--count', `origin/${currentBranch}..HEAD`], { cwd });
+        const count = parseInt(revListRes.stdout.trim(), 10);
+        if (!isNaN(count)) {
+          unpushedCommitCount = count;
+        }
+      } else {
+        hasRemoteBranch = false;
+      }
     }
 
     return {
       isRepo: true,
+      repoRoot,
       currentBranch,
       remoteOriginUrl,
+      hasRemoteBranch,
       hasUncommitted,
       unpushedCommitCount,
       repoOwner,
@@ -67,8 +96,8 @@ export class GitClient {
   }
 
   public parseGitHubUrl(url: string): { owner: string; repo: string } | null {
-    // Matches https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git)
-    const httpsRegex = /github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?$/i;
+    // Matches https://github.com/owner/repo.name(.git) and git@github.com:owner/repo.name(.git)
+    const httpsRegex = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/i;
     const match = url.match(httpsRegex);
     if (match) {
       return {
@@ -105,6 +134,11 @@ export class GitClient {
 
     if (!allowDirtyRemote) {
       const issues: string[] = [];
+
+      if (!status.hasRemoteBranch) {
+        issues.push(`Remote branch "${status.currentBranch}" does not exist on origin. Push it first with: git push -u origin ${status.currentBranch}`);
+      }
+
       if (status.hasUncommitted) {
         issues.push('You have uncommitted local changes (`git status --porcelain`).');
       }

@@ -1,0 +1,246 @@
+name: CloudIPA iOS Build
+
+run-name: "CloudIPA Build [${{ inputs.request_id }}] (${{ inputs.scheme || 'auto' }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: 'Unique build correlation ID'
+        required: true
+        type: string
+      project_path:
+        description: 'Path to iOS project root directory'
+        required: false
+        default: '.'
+        type: string
+      archive_url:
+        description: 'Optional temporary signed URL to download uploaded project archive'
+        required: false
+        default: ''
+        type: string
+      scheme:
+        description: 'Xcode scheme name to compile'
+        required: false
+        default: ''
+        type: string
+      configuration:
+        description: 'Build configuration (Release/Debug)'
+        required: false
+        default: 'Release'
+        type: string
+      runner:
+        description: 'GitHub-hosted macOS runner label'
+        required: false
+        default: 'macos-15'
+        type: string
+      xcode_version:
+        description: 'Xcode version to select (e.g. 16.0, 15.4) or auto'
+        required: false
+        default: 'auto'
+        type: string
+      artifact_name:
+        description: 'Base name of generated IPA'
+        required: false
+        default: 'App'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudipa-${{ github.workflow }}-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned-ipa:
+    name: Build Unsigned IPA
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Project Archive
+        if: ${{ inputs.archive_url != '' }}
+        env:
+          INPUT_ARCHIVE_URL: ${{ inputs.archive_url }}
+          INPUT_PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upload"
+          echo "Downloading project archive from signed URL..."
+          curl -fsSL "$INPUT_ARCHIVE_URL" -o "$RUNNER_TEMP/upload.zip"
+          unzip -q -o "$RUNNER_TEMP/upload.zip" -d "$RUNNER_TEMP/upload"
+          TARGET_DIR="${INPUT_PROJECT_PATH:-.}"
+          mkdir -p "$TARGET_DIR"
+          cp -R "$RUNNER_TEMP/upload/"* "$TARGET_DIR/" || true
+          echo "Project archive successfully unpacked into $TARGET_DIR"
+
+      - name: Select Xcode Version
+        if: ${{ inputs.xcode_version != '' && inputs.xcode_version != 'auto' }}
+        env:
+          INPUT_XCODE_VERSION: ${{ inputs.xcode_version }}
+        run: |
+          XCODE_PATH="/Applications/Xcode_${INPUT_XCODE_VERSION}.app"
+          if [ -d "$XCODE_PATH" ]; then
+            echo "Selecting Xcode version: $INPUT_XCODE_VERSION"
+            sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          else
+            echo "Requested Xcode $XCODE_PATH not found; listing installed Xcode versions:"
+            ls -d /Applications/Xcode*.app || true
+            echo "Falling back to default system Xcode"
+          fi
+          xcodebuild -version
+
+      - name: Resolve Project & Scheme
+        id: resolve
+        env:
+          INPUT_PROJECT_PATH: ${{ inputs.project_path }}
+          INPUT_SCHEME: ${{ inputs.scheme }}
+        run: |
+          set -euo pipefail
+          TARGET_DIR="${INPUT_PROJECT_PATH:-.}"
+          cd "$TARGET_DIR"
+
+          WORKSPACE_FILE=$(find . -maxdepth 2 -name "*.xcworkspace" ! -name "project.xcworkspace" | head -n 1 || true)
+          PROJECT_FILE=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1 || true)
+
+          if [ -n "$WORKSPACE_FILE" ]; then
+            CONTAINER_TYPE="-workspace"; CONTAINER_PATH="$WORKSPACE_FILE"
+          elif [ -n "$PROJECT_FILE" ]; then
+            CONTAINER_TYPE="-project"; CONTAINER_PATH="$PROJECT_FILE"
+          else
+            echo "::error::No .xcworkspace or .xcodeproj found"; exit 1
+          fi
+
+          SCHEME="$INPUT_SCHEME"
+          if [ -z "$SCHEME" ]; then
+            LIST_JSON=$(xcodebuild "$CONTAINER_TYPE" "$CONTAINER_PATH" -list -json 2>/dev/null || echo "{}")
+            SCHEME=$(printf '%s' "$LIST_JSON" | jq -r '(.workspace.schemes[0] // .project.schemes[0] // .project.targets[0]) // empty')
+          fi
+
+          [ -n "$SCHEME" ] || { echo "::error::Could not determine scheme"; exit 1; }
+
+          {
+            echo "scheme=$SCHEME"
+            echo "container_type=$CONTAINER_TYPE"
+            echo "container_path=$CONTAINER_PATH"
+            echo "target_dir=$TARGET_DIR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compile Unsigned iOS Application
+        id: compile
+        env:
+          TARGET_DIR: ${{ steps.resolve.outputs.target_dir }}
+          SCHEME: ${{ steps.resolve.outputs.scheme }}
+          CONTAINER_TYPE: ${{ steps.resolve.outputs.container_type }}
+          CONTAINER_PATH: ${{ steps.resolve.outputs.container_path }}
+          CONFIG: ${{ inputs.configuration }}
+        run: |
+          set -euo pipefail
+          DERIVED_DIR="$RUNNER_TEMP/cloudipa-derived"
+          mkdir -p "$DERIVED_DIR"
+
+          cd "$TARGET_DIR"
+          echo "Building scheme '$SCHEME' [Configuration: $CONFIG] in $TARGET_DIR..."
+
+          xcodebuild build \
+            "$CONTAINER_TYPE" "$CONTAINER_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIG" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DIR" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO | tee "$RUNNER_TEMP/build.log"
+
+          PRODUCTS_DIR="$DERIVED_DIR/Build/Products/${CONFIG}-iphoneos"
+          APP_PATH=$(find "$PRODUCTS_DIR" -maxdepth 2 -name "*.app" -type d | head -n 1 || true)
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "::error::Compiled .app bundle not found in $PRODUCTS_DIR"
+            exit 1
+          fi
+
+          echo "Successfully compiled .app at: $APP_PATH"
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Package Unsigned IPA & Extract Metadata
+        id: package
+        env:
+          APP_PATH: ${{ steps.compile.outputs.app_path }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          SCHEME: ${{ steps.resolve.outputs.scheme }}
+          CONFIG: ${{ inputs.configuration }}
+          RUNNER_LABEL: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          STAGE_DIR="$RUNNER_TEMP/ipa-stage"
+          PAYLOAD_DIR="$STAGE_DIR/Payload"
+          OUTPUT_IPA="$RUNNER_TEMP/${ARTIFACT_NAME}.unsigned.ipa"
+          INFO_PLIST="$APP_PATH/Info.plist"
+
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+
+          # Read App Metadata
+          BUNDLE_ID="Unknown"; VERSION="Unknown"; BUILD_NUM="Unknown"; DISPLAY_NAME="Unknown"
+
+          if [ -f "$INFO_PLIST" ]; then
+            BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST" 2>/dev/null || echo "Unknown")
+            VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST" 2>/dev/null || echo "Unknown")
+            BUILD_NUM=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST" 2>/dev/null || echo "Unknown")
+            DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$INFO_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$INFO_PLIST" 2>/dev/null || echo "Unknown")
+          fi
+
+          echo "Packaging .ipa..."
+          cd "$STAGE_DIR"
+          zip -r9 -y "$OUTPUT_IPA" Payload
+
+          echo "Validating ZIP integrity..."
+          unzip -t "$OUTPUT_IPA"
+
+          # Verify Payload/*.app/Info.plist is inside the archive
+          if ! unzip -l "$OUTPUT_IPA" | grep -E "Payload/[^/]+\.app/Info\.plist" >/dev/null; then
+            echo "::error::Integrity check failed: Payload/*.app/Info.plist missing from generated IPA."
+            exit 1
+          fi
+
+          SHA256=$(shasum -a 256 "$OUTPUT_IPA" | awk '{print $1}')
+          IPA_SIZE=$(stat -f %z "$OUTPUT_IPA" 2>/dev/null || wc -c < "$OUTPUT_IPA")
+          CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          jq -n \
+            --arg requestId "$REQUEST_ID" \
+            --arg scheme "$SCHEME" \
+            --arg configuration "$CONFIG" \
+            --arg bundleIdentifier "$BUNDLE_ID" \
+            --arg displayName "$DISPLAY_NAME" \
+            --arg version "$VERSION" \
+            --arg buildNumber "$BUILD_NUM" \
+            --arg sha256 "$SHA256" \
+            --argjson sizeBytes "$IPA_SIZE" \
+            --arg createdAt "$CREATED_AT" \
+            --arg runner "$RUNNER_LABEL" \
+            '{requestId: $requestId, scheme: $scheme, configuration: $configuration, bundleIdentifier: $bundleIdentifier, displayName: $displayName, version: $version, buildNumber: $buildNumber, sha256: $sha256, sizeBytes: $sizeBytes, createdAt: $createdAt, runner: $runner}' \
+            > "$RUNNER_TEMP/build-info.json"
+
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "ipa_path=$OUTPUT_IPA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Unsigned IPA & Metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudipa-artifact-${{ inputs.request_id }}
+          path: |
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ runner.temp }}/build-info.json
+            ${{ runner.temp }}/build.log
+          retention-days: 7

@@ -3,31 +3,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CloudIPA — Cross-Platform iOS Cloud Build Engine</title>
-  <meta name="description" content="Compile native iOS projects into unsigned .ipa packages using GitHub-hosted macOS runners. Zero local Mac or Xcode required.">
+  <title>CloudIPA — Web-Based iOS Cloud Build Studio</title>
+  <meta name="description" content="Select an iOS project folder and compile into an unsigned .ipa package using GitHub-hosted macOS runners. Zero local Mac or Xcode required.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
       --bg-dark: #07090e;
-      --card-bg: rgba(18, 23, 38, 0.65);
+      --card-bg: rgba(18, 23, 38, 0.7);
       --card-border: rgba(255, 255, 255, 0.08);
-      --card-border-glow: rgba(0, 240, 255, 0.25);
+      --card-border-glow: rgba(0, 240, 255, 0.35);
       --accent-cyan: #00f0ff;
       --accent-purple: #9d4edd;
       --accent-blue: #3a86ff;
+      --accent-green: #10b981;
       --text-main: #f0f4fc;
       --text-muted: #8b9bb4;
       --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       background-color: var(--bg-dark);
@@ -35,11 +33,10 @@
       font-family: var(--font-sans);
       min-height: 100vh;
       overflow-x: hidden;
-      position: relative;
       line-height: 1.6;
     }
 
-    /* Ambient Spatial Background & Perspective Grid */
+    /* Ambient Spatial Background */
     .spatial-bg {
       position: fixed;
       inset: 0;
@@ -52,22 +49,22 @@
       position: absolute;
       top: -150px;
       left: 15%;
-      width: 600px;
-      height: 600px;
-      background: radial-gradient(circle, rgba(0, 240, 255, 0.15) 0%, rgba(58, 134, 255, 0.05) 50%, transparent 70%);
+      width: 650px;
+      height: 650px;
+      background: radial-gradient(circle, rgba(0, 240, 255, 0.18) 0%, rgba(58, 134, 255, 0.05) 50%, transparent 70%);
       filter: blur(80px);
-      animation: floatOrb 18s ease-in-out infinite alternate;
+      animation: floatOrb 20s ease-in-out infinite alternate;
     }
 
     .glow-orb-2 {
       position: absolute;
-      top: 35%;
-      right: -100px;
-      width: 700px;
-      height: 700px;
-      background: radial-gradient(circle, rgba(157, 78, 221, 0.18) 0%, rgba(255, 0, 110, 0.04) 50%, transparent 70%);
+      top: 40%;
+      right: -120px;
+      width: 750px;
+      height: 750px;
+      background: radial-gradient(circle, rgba(157, 78, 221, 0.18) 0%, rgba(255, 0, 110, 0.05) 50%, transparent 70%);
       filter: blur(90px);
-      animation: floatOrb 22s ease-in-out infinite alternate-reverse;
+      animation: floatOrb 24s ease-in-out infinite alternate-reverse;
     }
 
     .grid-mesh {
@@ -77,16 +74,15 @@
         linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
         linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
       background-size: 60px 60px;
-      mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.8) 0%, transparent 80%);
-      -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.8) 0%, transparent 80%);
+      mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, transparent 80%);
+      -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, transparent 80%);
     }
 
     @keyframes floatOrb {
       0% { transform: translate(0, 0) scale(1); }
-      100% { transform: translate(80px, 60px) scale(1.15); }
+      100% { transform: translate(70px, 50px) scale(1.12); }
     }
 
-    /* Layout */
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -95,12 +91,12 @@
       z-index: 1;
     }
 
-    /* Navigation */
+    /* Navbar */
     nav {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 32px 0 24px;
+      padding: 32px 0 20px;
     }
 
     .brand {
@@ -122,7 +118,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 8px 24px rgba(0, 240, 255, 0.3);
+      box-shadow: 0 8px 24px rgba(0, 240, 255, 0.35);
     }
 
     .badge-pill {
@@ -136,7 +132,6 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      box-shadow: 0 0 16px rgba(0, 240, 255, 0.15);
     }
 
     .badge-pill::before {
@@ -148,85 +143,263 @@
       box-shadow: 0 0 8px var(--accent-cyan);
     }
 
-    /* Hero Section */
+    /* Hero */
     .hero {
       text-align: center;
-      padding: 60px 0 40px;
-      perspective: 1200px;
+      padding: 40px 0 24px;
     }
 
     .hero-title {
-      font-size: clamp(2.5rem, 6vw, 4.2rem);
+      font-size: clamp(2.4rem, 5.5vw, 4rem);
       font-weight: 800;
-      line-height: 1.1;
-      letter-spacing: -1.5px;
-      margin: 20px 0 18px;
+      line-height: 1.15;
+      letter-spacing: -1.2px;
+      margin-bottom: 16px;
     }
 
     .hero-gradient {
-      background: linear-gradient(135deg, #ffffff 20%, var(--accent-cyan) 60%, var(--accent-purple) 95%);
+      background: linear-gradient(135deg, #ffffff 15%, var(--accent-cyan) 60%, var(--accent-purple) 95%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
     .hero-subtitle {
-      font-size: clamp(1rem, 2vw, 1.25rem);
+      font-size: clamp(1rem, 2vw, 1.2rem);
       color: var(--text-muted);
-      max-width: 680px;
+      max-width: 650px;
       margin: 0 auto 36px;
-      font-weight: 400;
     }
 
-    /* CTA Buttons & Download Area */
-    .cta-container {
+    /* Interactive Web Builder Studio Card */
+    .studio-card {
+      background: linear-gradient(135deg, rgba(18, 24, 42, 0.85), rgba(28, 18, 48, 0.7));
+      border: 1px solid var(--card-border-glow);
+      border-radius: 24px;
+      padding: 40px;
+      margin: 0 auto 48px;
+      max-width: 900px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      position: relative;
+    }
+
+    .dropzone {
+      border: 2px dashed rgba(0, 240, 255, 0.35);
+      border-radius: 18px;
+      padding: 48px 24px;
+      text-align: center;
+      background: rgba(0, 0, 0, 0.2);
+      transition: all 0.3s;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent-cyan);
+      background: rgba(0, 240, 255, 0.05);
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.15);
+    }
+
+    .dropzone-icon {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 16px;
+      background: rgba(0, 240, 255, 0.1);
+      border-radius: 16px;
       display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
       align-items: center;
-      gap: 16px;
-      margin-bottom: 48px;
+      justify-content: center;
+      color: var(--accent-cyan);
+    }
+
+    .dropzone-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .dropzone-desc {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 24px;
+    }
+
+    .picker-btn-group {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
     }
 
     .btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
-      padding: 16px 28px;
-      border-radius: 14px;
-      font-size: 1rem;
+      gap: 8px;
+      padding: 14px 26px;
+      border-radius: 12px;
+      font-size: 0.95rem;
       font-weight: 700;
       text-decoration: none;
-      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.25s;
       cursor: pointer;
-      position: relative;
+      border: none;
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #00f0ff, #3a86ff);
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
       color: #050811;
-      box-shadow: 0 12px 32px rgba(0, 240, 255, 0.35);
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.35);
     }
 
     .btn-primary:hover {
-      transform: translateY(-3px) scale(1.02);
-      box-shadow: 0 18px 40px rgba(0, 240, 255, 0.5);
+      transform: translateY(-2px);
+      box-shadow: 0 14px 36px rgba(0, 240, 255, 0.5);
     }
 
     .btn-secondary {
-      background: var(--card-bg);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      color: var(--text-main);
-      border: 1px solid var(--card-border);
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.15);
     }
 
     .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    /* Selected Project Panel */
+    .project-meta-panel {
+      display: none;
+      margin-top: 28px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 14px;
+      padding: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      font-size: 0.95rem;
+    }
+
+    .meta-label { color: var(--text-muted); }
+    .meta-value { font-weight: 600; font-family: var(--font-mono); color: var(--accent-cyan); }
+
+    .scheme-input {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-family: var(--font-sans);
+      width: 220px;
+    }
+
+    /* Live Build Progress Console */
+    .progress-console {
+      display: none;
+      margin-top: 32px;
+      background: rgba(8, 12, 20, 0.9);
+      border: 1px solid var(--card-border-glow);
+      border-radius: 16px;
+      padding: 24px;
+    }
+
+    .console-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .timer-badge {
+      font-family: var(--font-mono);
+      background: rgba(0, 240, 255, 0.12);
+      color: var(--accent-cyan);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+
+    .progress-bar-track {
+      width: 100%;
+      height: 8px;
       background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.2);
-      transform: translateY(-3px);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 15%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-purple));
+      border-radius: 999px;
+      transition: width 0.5s ease;
+    }
+
+    .stages-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .stage-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      transition: color 0.3s;
+    }
+
+    .stage-item.active {
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
+    .stage-item.completed {
+      color: var(--accent-green);
+    }
+
+    .stage-indicator {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+    }
+
+    .stage-item.active .stage-indicator {
+      border-color: var(--accent-cyan);
+      background: rgba(0, 240, 255, 0.2);
+      box-shadow: 0 0 10px var(--accent-cyan);
+    }
+
+    .stage-item.completed .stage-indicator {
+      border-color: var(--accent-green);
+      background: var(--accent-green);
+      color: #000;
+    }
+
+    /* Result Card */
+    .result-card {
+      display: none;
+      margin-top: 32px;
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(0, 240, 255, 0.1));
+      border: 1px solid var(--accent-green);
+      border-radius: 18px;
+      padding: 28px;
+      text-align: center;
+      box-shadow: 0 16px 40px rgba(16, 185, 129, 0.15);
     }
 
     /* Terminal Install Box */
@@ -237,13 +410,12 @@
       border: 1px solid var(--card-border);
       border-radius: 16px;
       max-width: 680px;
-      margin: 0 auto 72px;
+      margin: 40px auto 72px;
       padding: 16px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-      position: relative;
     }
 
     .terminal-cmd {
@@ -253,12 +425,6 @@
       overflow-x: auto;
       white-space: nowrap;
       padding-right: 12px;
-    }
-
-    .terminal-prefix {
-      color: var(--text-muted);
-      user-select: none;
-      margin-right: 8px;
     }
 
     .copy-btn {
@@ -274,7 +440,6 @@
       align-items: center;
       gap: 6px;
       transition: all 0.2s;
-      flex-shrink: 0;
     }
 
     .copy-btn:hover {
@@ -283,170 +448,17 @@
       color: #fff;
     }
 
-    /* 3D Glassmorphic Cards Grid */
-    .grid-section {
-      padding: 20px 0 80px;
-    }
-
-    .section-title {
-      font-size: 1.85rem;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      text-align: center;
-      margin-bottom: 36px;
-    }
-
-    .cards-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 24px;
-    }
-
-    .card {
-      background: var(--card-bg);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--card-border);
-      border-radius: 20px;
-      padding: 32px;
-      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-      position: relative;
-      overflow: hidden;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
-    }
-
-    .card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-    }
-
-    .card:hover {
-      transform: translateY(-6px);
-      border-color: var(--card-border-glow);
-      box-shadow: 0 24px 60px rgba(0, 240, 255, 0.12);
-    }
-
-    .card-icon {
-      width: 52px;
-      height: 52px;
-      border-radius: 14px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-      color: var(--accent-cyan);
-    }
-
-    .card-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      margin-bottom: 10px;
-    }
-
-    .card-desc {
-      color: var(--text-muted);
-      font-size: 0.95rem;
-      line-height: 1.55;
-    }
-
-    /* Downloads Table Card */
-    .download-card {
-      background: linear-gradient(135deg, rgba(18, 24, 42, 0.8), rgba(28, 18, 48, 0.6));
-      border: 1px solid rgba(0, 240, 255, 0.25);
-      border-radius: 24px;
-      padding: 36px;
-      margin-bottom: 60px;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
-    }
-
-    .table-responsive {
-      width: 100%;
-      overflow-x: auto;
-      margin-top: 24px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-    }
-
-    th {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--card-border);
-    }
-
-    td {
-      padding: 18px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      font-size: 0.95rem;
-    }
-
-    .file-pill {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      background: rgba(255, 255, 255, 0.06);
-      padding: 4px 10px;
-      border-radius: 6px;
-      color: #fff;
-    }
-
-    .table-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(0, 240, 255, 0.12);
-      border: 1px solid rgba(0, 240, 255, 0.3);
-      color: var(--accent-cyan);
-      padding: 8px 16px;
-      border-radius: 8px;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.85rem;
-      transition: all 0.2s;
-    }
-
-    .table-btn:hover {
-      background: var(--accent-cyan);
-      color: #000;
-      box-shadow: 0 0 16px rgba(0, 240, 255, 0.4);
-    }
-
-    /* Footer */
     footer {
       text-align: center;
-      padding: 48px 0;
+      padding: 40px 0;
       color: var(--text-muted);
       font-size: 0.9rem;
       border-top: 1px solid var(--card-border);
-    }
-
-    @media (max-width: 768px) {
-      .cards-grid {
-        grid-template-columns: 1fr;
-      }
-      .terminal-box {
-        flex-direction: column;
-        gap: 14px;
-        align-items: flex-start;
-      }
     }
   </style>
 </head>
 <body>
 
-  <!-- Background Ambience -->
   <div class="spatial-bg">
     <div class="glow-orb-1"></div>
     <div class="glow-orb-2"></div>
@@ -464,48 +476,110 @@
         </div>
         <span>CloudIPA</span>
       </a>
-      <div class="badge-pill">v1.0.0 Production Ready</div>
+      <div class="badge-pill">Web Cloud Studio v1.0.0</div>
     </nav>
 
-    <!-- Hero Section -->
+    <!-- Hero -->
     <section class="hero">
       <h1 class="hero-title">
-        Compile iOS Apps in the Cloud.<br>
-        <span class="hero-gradient">Zero Mac Required.</span>
+        Select Project Folder.<br>
+        <span class="hero-gradient">Compile to Unsigned .IPA</span>
       </h1>
       <p class="hero-subtitle">
-        Cross-platform CLI tool for Windows & Linux. Automate Xcode builds and generate unsigned <code style="color:var(--accent-cyan);">.ipa</code> packages via GitHub-hosted macOS runners.
+        Drop an Xcode project or select a project directory from your computer. We compile it in the cloud on an Apple Silicon macOS runner and give you the direct download link.
       </p>
 
-      <!-- Primary Action Buttons -->
-      <div class="cta-container">
-        <a href="/downloads/cloudipa-v1.0.0.zip" class="btn btn-primary" download>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          Download CloudIPA (.ZIP)
-        </a>
+      <!-- Web Builder Studio -->
+      <div class="studio-card">
+        <div class="dropzone" id="dropzone" onclick="triggerFolderSelect()">
+          <div class="dropzone-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              <line x1="12" y1="11" x2="12" y2="17"></line>
+              <polyline points="9 14 12 11 15 14"></polyline>
+            </svg>
+          </div>
+          <h2 class="dropzone-title">Select iOS Project Folder or Drop .ZIP</h2>
+          <p class="dropzone-desc">Select your root Xcode project containing .xcodeproj or .xcworkspace</p>
+          
+          <div class="picker-btn-group" onclick="event.stopPropagation()">
+            <button class="btn btn-primary" onclick="triggerFolderSelect()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+              Select Project Folder
+            </button>
+            <button class="btn btn-secondary" onclick="triggerZipSelect()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+              Upload Project .ZIP
+            </button>
+          </div>
 
-        <a href="/downloads/CloudIPA-Demo.unsigned.ipa" class="btn btn-secondary" download>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
-            <line x1="12" y1="18" x2="12.01" y2="18"></line>
-          </svg>
-          Sample Unsigned .IPA
-        </a>
+          <!-- Hidden File Inputs -->
+          <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" onchange="handleFolderSelect(this.files)">
+          <input type="file" id="zipInput" accept=".zip" style="display:none;" onchange="handleZipSelect(this.files[0])">
+        </div>
 
-        <a href="/downloads/cloudipa-v1.0.0.tar.gz" class="btn btn-secondary" download>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 17 10 11 4 5"></polyline>
-            <line x1="12" y1="19" x2="20" y2="19"></line>
-          </svg>
-          Unix (.tar.gz)
-        </a>
+        <!-- Selected Project Details -->
+        <div class="project-meta-panel" id="metaPanel">
+          <div class="meta-row">
+            <span class="meta-label">Selected Project:</span>
+            <span class="meta-value" id="metaProjectName">-</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Files Detected:</span>
+            <span class="meta-value" id="metaFileCount">0 files</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Target Scheme:</span>
+            <input type="text" id="schemeInput" class="scheme-input" placeholder="e.g. MyApp">
+          </div>
+          <div style="margin-top: 18px; text-align: right;">
+            <button class="btn btn-primary" id="startBuildBtn" onclick="startCloudBuild()" style="width: 100%;">
+              🚀 Start Cloud Compilation
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress Console -->
+        <div class="progress-console" id="progressConsole">
+          <div class="console-header">
+            <div style="font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">
+              <span id="currentStageText">Initializing...</span>
+            </div>
+            <span class="timer-badge" id="elapsedTimer">00:00</span>
+          </div>
+
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progressBar"></div>
+          </div>
+
+          <div class="stages-list">
+            <div class="stage-item" id="stage1"><div class="stage-indicator">1</div> Uploading & Compressing Project</div>
+            <div class="stage-item" id="stage2"><div class="stage-indicator">2</div> Dispatching to GitHub Actions</div>
+            <div class="stage-item" id="stage3"><div class="stage-indicator">3</div> Waiting for macOS Runner Allocation</div>
+            <div class="stage-item" id="stage4"><div class="stage-indicator">4</div> Checking Out & Setting Xcode Version</div>
+            <div class="stage-item" id="stage5"><div class="stage-indicator">5</div> Compiling Unsigned .app (xcodebuild)</div>
+            <div class="stage-item" id="stage6"><div class="stage-indicator">6</div> Packaging IPA & Generating Checksum</div>
+            <div class="stage-item" id="stage7"><div class="stage-indicator">7</div> Direct Download Ready</div>
+          </div>
+        </div>
+
+        <!-- Download Result Card -->
+        <div class="result-card" id="resultCard">
+          <h3 style="font-size: 1.4rem; font-weight: 800; color: #fff; margin-bottom: 8px;">🎉 Build Completed Successfully!</h3>
+          <p style="color: var(--text-muted); margin-bottom: 20px;">Your unsigned iOS package is compiled, verified, and ready.</p>
+          <div style="display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;">
+            <a href="#" id="ipaDownloadLink" class="btn btn-primary" download>
+              📥 Download Unsigned .IPA
+            </a>
+            <a href="/downloads/cloudipa-v1.0.0.zip" class="btn btn-secondary" download>
+              📦 Download CLI Bundle (.ZIP)
+            </a>
+          </div>
+        </div>
+
       </div>
 
-      <!-- One-line terminal installation -->
+      <!-- One-line terminal install option -->
       <div class="terminal-box">
         <div class="terminal-cmd">
           <span class="terminal-prefix">$</span>curl -fsSL https://ios.akbr.in/install.sh | bash
@@ -515,106 +589,254 @@
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
-          <span>Copy</span>
+          <span>Copy CLI Command</span>
         </button>
       </div>
-    </section>
 
-    <!-- Downloads Table -->
-    <div class="download-card">
-      <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 8px;">Direct Package Downloads</h3>
-      <p style="color: var(--text-muted); font-size: 0.95rem;">All packages are compiled, cryptographically verified, and hosted directly on this VPS.</p>
-
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr>
-              <th>Artifact Name</th>
-              <th>Format</th>
-              <th>Target Platform</th>
-              <th>Description</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><span class="file-pill">cloudipa-v1.0.0.zip</span></td>
-              <td>ZIP Archive</td>
-              <td>Windows / Linux / macOS</td>
-              <td>Complete executable bundle with CLI binary and workflow templates</td>
-              <td><a href="/downloads/cloudipa-v1.0.0.zip" class="table-btn" download>Download</a></td>
-            </tr>
-            <tr>
-              <td><span class="file-pill">CloudIPA-Demo.unsigned.ipa</span></td>
-              <td>iOS IPA Package</td>
-              <td>iPhone / iPad / Sideloading</td>
-              <td>Pre-built demonstration unsigned IPA (ready for AltStore/SideStore)</td>
-              <td><a href="/downloads/CloudIPA-Demo.unsigned.ipa" class="table-btn" download>Download</a></td>
-            </tr>
-            <tr>
-              <td><span class="file-pill">cloudipa-v1.0.0.tar.gz</span></td>
-              <td>Tarball Archive</td>
-              <td>Linux / macOS / WSL</td>
-              <td>Unix standard tarball archive for server and container pipelines</td>
-              <td><a href="/downloads/cloudipa-v1.0.0.tar.gz" class="table-btn" download>Download</a></td>
-            </tr>
-            <tr>
-              <td><span class="file-pill">install.sh</span></td>
-              <td>Bash Script</td>
-              <td>Linux / macOS / Git Bash</td>
-              <td>One-click automated curl installer script</td>
-              <td><a href="/install.sh" class="table-btn" download>Download</a></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Features Grid -->
-    <section class="grid-section">
-      <h2 class="section-title">Engineered for Performance & Safety</h2>
-      <div class="cards-grid">
-        <div class="card">
-          <div class="card-icon">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
-            </svg>
-          </div>
-          <h3 class="card-title">Pure Node.js Detection</h3>
-          <p class="card-desc">Zero local Xcode or Mac assumptions. Scans .xcworkspace, .xcodeproj, and xcshareddata schemes using pure filesystem parsing.</p>
-        </div>
-
-        <div class="card">
-          <div class="card-icon">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <polyline points="12 6 12 12 16 14"></polyline>
-            </svg>
-          </div>
-          <h3 class="card-title">25-Min Safety Timeout</h3>
-          <p class="card-desc">Hard timeout and concurrency limits protect your GitHub Actions minutes and prevent runaway cryptominer heuristic flags.</p>
-        </div>
-
-        <div class="card">
-          <div class="card-icon">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            </svg>
-          </div>
-          <h3 class="card-title">Polite Polling Engine</h3>
-          <p class="card-desc">10-second minimum polling interval with randomized jitter and exponential backoff to eliminate secondary rate limit bans.</p>
-        </div>
-      </div>
     </section>
 
     <!-- Footer -->
     <footer>
-      <p>CloudIPA &copy; 2026. Hosted on High-Performance VPS.</p>
+      <p>CloudIPA &copy; 2026. Automated Cloud iOS Engine on Apple Silicon Runners.</p>
     </footer>
   </div>
 
   <script>
+    let selectedFiles = [];
+    let selectedZipBlob = null;
+    let buildStartTime = null;
+    let timerInterval = null;
+
+    function triggerFolderSelect() {
+      document.getElementById('folderInput').click();
+    }
+
+    function triggerZipSelect() {
+      document.getElementById('zipInput').click();
+    }
+
+    // Drag and drop handlers
+    const dropzone = document.getElementById('dropzone');
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        const file = e.dataTransfer.files[0];
+        if (file.name.endsWith('.zip')) {
+          handleZipSelect(file);
+        } else {
+          handleFolderSelect(e.dataTransfer.files);
+        }
+      }
+    });
+
+    function handleFolderSelect(files) {
+      if (!files || files.length === 0) return;
+      selectedFiles = Array.from(files);
+      selectedZipBlob = null;
+
+      let detectedProj = 'App';
+      let detectedScheme = '';
+
+      for (const f of selectedFiles) {
+        const p = f.webkitRelativePath || f.name;
+        if (p.includes('.xcodeproj')) {
+          const match = p.match(/([^/]+)\.xcodeproj/);
+          if (match) detectedProj = match[1];
+        }
+        if (p.includes('.xcscheme')) {
+          const sMatch = p.match(/([^/]+)\.xcscheme/);
+          if (sMatch && !detectedScheme) detectedScheme = sMatch[1];
+        }
+      }
+
+      document.getElementById('metaProjectName').textContent = detectedProj;
+      document.getElementById('metaFileCount').textContent = `${selectedFiles.length} files`;
+      document.getElementById('schemeInput').value = detectedScheme || detectedProj;
+      document.getElementById('metaPanel').style.display = 'block';
+    }
+
+    function handleZipSelect(file) {
+      if (!file) return;
+      selectedFiles = [];
+      selectedZipBlob = file;
+
+      const baseName = file.name.replace(/\.zip$/i, '');
+      document.getElementById('metaProjectName').textContent = file.name;
+      document.getElementById('metaFileCount').textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB ZIP`;
+      document.getElementById('schemeInput').value = baseName;
+      document.getElementById('metaPanel').style.display = 'block';
+    }
+
+    async function startCloudBuild() {
+      const scheme = document.getElementById('schemeInput').value.trim() || 'App';
+      document.getElementById('metaPanel').style.display = 'none';
+      document.getElementById('progressConsole').style.display = 'block';
+      document.getElementById('resultCard').style.display = 'none';
+
+      buildStartTime = Date.now();
+      timerInterval = setInterval(updateTimer, 1000);
+
+      updateStage(1, 'Compressing & uploading project files...');
+
+      let zipBlob = selectedZipBlob;
+
+      // If user selected a directory, zip in browser using JSZip with smart exclusions & compression
+      if (!zipBlob && selectedFiles.length > 0) {
+        const zip = new JSZip();
+        const IGNORE_PATTERNS = [
+          /\/\.git(\/|$)/i,
+          /^\.git(\/|$)/i,
+          /\/DerivedData(\/|$)/i,
+          /^DerivedData(\/|$)/i,
+          /\/build(\/|$)/i,
+          /^build(\/|$)/i,
+          /\/\.dart_tool(\/|$)/i,
+          /^\.dart_tool(\/|$)/i,
+          /\/xcuserdata(\/|$)/i,
+          /^xcuserdata(\/|$)/i,
+          /\/node_modules(\/|$)/i,
+          /^node_modules(\/|$)/i,
+          /\.DS_Store$/i,
+        ];
+
+        let addedFiles = 0;
+        for (const file of selectedFiles) {
+          const path = file.webkitRelativePath || file.name;
+          const isIgnored = IGNORE_PATTERNS.some((pattern) => pattern.test(path));
+          if (!isIgnored) {
+            zip.file(path, file);
+            addedFiles++;
+          }
+        }
+
+        zipBlob = await zip.generateAsync(
+          {
+            type: 'blob',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 6 },
+          },
+          (metadata) => {
+            document.getElementById('currentStageText').textContent = `Compressing project (${addedFiles} files): ${Math.round(metadata.percent)}%`;
+          }
+        );
+      }
+
+      const formData = new FormData();
+      formData.append('projectZip', zipBlob, `${scheme}.zip`);
+      formData.append('scheme', scheme);
+
+      try {
+        const res = await fetch('/api/build', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const resText = await res.text();
+        let data;
+        try {
+          data = JSON.parse(resText);
+        } catch {
+          if (res.status === 413) {
+            throw new Error('Upload exceeds the 1GB server limit. Please remove build caches or DerivedData.');
+          } else if (res.status === 502 || res.status === 504) {
+            throw new Error(`Server Gateway Error (${res.status}). The cloud build worker is reloading, please retry in 10 seconds.`);
+          } else {
+            throw new Error(`Server returned HTTP ${res.status}: ${resText.slice(0, 150)}`);
+          }
+        }
+
+        if (!res.ok) {
+          throw new Error(data.error || `Server error (${res.status})`);
+        }
+
+        pollBuildStatus(data.requestId);
+
+      } catch (err) {
+        clearInterval(timerInterval);
+        alert('Build Dispatch Error: ' + err.message);
+        document.getElementById('metaPanel').style.display = 'block';
+        document.getElementById('progressConsole').style.display = 'none';
+      }
+    }
+
+    async function pollBuildStatus(requestId) {
+      let consecutiveErrors = 0;
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/build/${requestId}`);
+          if (res.status === 404) {
+            clearInterval(interval);
+            clearInterval(timerInterval);
+            alert('Build job not found or has expired.');
+            return;
+          }
+          if (!res.ok) {
+            consecutiveErrors++;
+            if (consecutiveErrors >= 3) {
+              clearInterval(interval);
+              clearInterval(timerInterval);
+              alert(`Lost connection to build server (HTTP ${res.status}).`);
+            }
+            return;
+          }
+          consecutiveErrors = 0;
+
+          const data = await res.json();
+
+          // Error-first state check
+          if (data.status === 'failed') {
+            clearInterval(interval);
+            clearInterval(timerInterval);
+            document.getElementById('currentStageText').textContent = 'Build Failed: ' + (data.error || 'Check build logs');
+            document.getElementById('currentStageText').style.color = '#ef4444';
+            alert('Build failed: ' + (data.error || 'Check build logs'));
+            return;
+          }
+
+          updateStage(data.stage, data.message);
+
+          if (data.status === 'completed') {
+            clearInterval(interval);
+            clearInterval(timerInterval);
+            document.getElementById('ipaDownloadLink').href = data.artifactUrl;
+            document.getElementById('resultCard').style.display = 'block';
+            document.getElementById('progressBar').style.width = '100%';
+          }
+        } catch (err) {
+          console.warn('Status poll warning:', err);
+        }
+      }, 5000);
+    }
+
+    function updateStage(stageNumber, message) {
+      document.getElementById('currentStageText').textContent = message || `Executing stage ${stageNumber}...`;
+      const pct = Math.min(Math.round((stageNumber / 7) * 100), 100);
+      document.getElementById('progressBar').style.width = `${pct}%`;
+
+      for (let i = 1; i <= 7; i++) {
+        const el = document.getElementById(`stage${i}`);
+        if (!el) continue;
+        if (i < stageNumber) {
+          el.className = 'stage-item completed';
+        } else if (i === stageNumber) {
+          el.className = 'stage-item active';
+        } else {
+          el.className = 'stage-item';
+        }
+      }
+    }
+
+    function updateTimer() {
+      if (!buildStartTime) return;
+      const elapsed = Math.floor((Date.now() - buildStartTime) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const secs = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('elapsedTimer').textContent = `${mins}:${secs}`;
+    }
+
     function copyInstallCmd(btn) {
       const text = 'curl -fsSL https://ios.akbr.in/install.sh | bash';
       navigator.clipboard.writeText(text).then(() => {
@@ -622,12 +844,7 @@
         const orig = span.textContent;
         span.textContent = 'Copied!';
         btn.style.borderColor = 'var(--accent-cyan)';
-        btn.style.color = 'var(--accent-cyan)';
-        setTimeout(() => {
-          span.textContent = orig;
-          btn.style.borderColor = '';
-          btn.style.color = '';
-        }, 2000);
+        setTimeout(() => { span.textContent = orig; btn.style.borderColor = ''; }, 2000);
       });
     }
   </script>

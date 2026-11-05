@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { LAST_BUILD_FILE } from './build';
+import { loadConfig, findConfigFile } from '../config/loader';
 import { ghClient } from '../github/gh-client';
 import { gitClient } from '../git/git-client';
 import { logger } from '../utils/logger';
@@ -13,6 +14,7 @@ export async function runStatus(options?: { plain?: boolean; verbose?: boolean }
   }
 
   const cwd = process.cwd();
+  const config = loadConfig(findConfigFile(cwd) || undefined);
   const lastBuildPath = path.join(cwd, LAST_BUILD_FILE);
 
   let lastBuild: LastBuildRecord | null = null;
@@ -33,7 +35,7 @@ export async function runStatus(options?: { plain?: boolean; verbose?: boolean }
     // Attempt to query latest remote run
     if (gitStatus.isRepo) {
       try {
-        const runs = await ghClient.listWorkflowRuns('cloudipa-build.yml', 1, cwd);
+        const runs = await ghClient.listWorkflowRuns(config.github.workflow, 1, cwd);
         if (runs.length > 0) {
           const run = runs[0];
           logger.raw('\nLatest Remote Workflow Run:');

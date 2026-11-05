@@ -1,7 +1,9 @@
 node_modules/
 dist/
+dist-package/
 build/
 .cloudipa/
+.env
 coverage/
 *.log
 .DS_Store

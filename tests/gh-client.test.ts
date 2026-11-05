@@ -94,4 +94,32 @@ describe('GitHub CLI (gh) Client Wrapper', () => {
       './build',
     ]);
   });
+
+  it('omits -n flag when artifact name is empty or whitespace', async () => {
+    let capturedArgs: string[] = [];
+    setCustomExecutor(async (file, args) => {
+      capturedArgs = args;
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+
+    await ghClient.downloadArtifact(102, '', './build');
+    expect(capturedArgs).toEqual([
+      'run',
+      'download',
+      '102',
+      '--dir',
+      './build',
+    ]);
+    expect(capturedArgs).not.toContain('-n');
+
+    await ghClient.downloadArtifact(103, '   ', './build');
+    expect(capturedArgs).toEqual([
+      'run',
+      'download',
+      '103',
+      '--dir',
+      './build',
+    ]);
+    expect(capturedArgs).not.toContain('-n');
+  });
 });

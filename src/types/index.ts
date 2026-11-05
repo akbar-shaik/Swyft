@@ -58,8 +58,10 @@ export interface ProjectInfo {
 
 export interface GitStatus {
   isRepo: boolean;
+  repoRoot?: string;
   currentBranch: string;
   remoteOriginUrl?: string;
+  hasRemoteBranch: boolean;
   hasUncommitted: boolean;
   unpushedCommitCount: number;
   repoOwner?: string;

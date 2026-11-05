@@ -35,6 +35,15 @@ describe('Configuration System (.cloudipa.yml)', () => {
     expect(normalized.build.timeout_minutes).toBe(25);
   });
 
+  it('deep clones DEFAULT_CONFIG to prevent singleton mutation', () => {
+    const config1 = validateAndNormalizeConfig(null);
+    config1.build.runner = 'mutated-runner';
+    config1.project.path = '/mutated/path';
+
+    expect(DEFAULT_CONFIG.build.runner).toBe('macos-15');
+    expect(DEFAULT_CONFIG.project.path).toBe('.');
+  });
+
   it('persists and reloads config via saveConfig and loadConfig', () => {
     const configPath = path.join(tempDir, '.cloudipa.yml');
     const customConfig = {

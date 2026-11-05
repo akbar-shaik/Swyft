@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { LAST_BUILD_FILE } from './build';
+import { loadConfig, findConfigFile } from '../config/loader';
 import { ghClient } from '../github/gh-client';
 import { logger } from '../utils/logger';
 import { LastBuildRecord } from '../types';
@@ -12,6 +13,7 @@ export async function runLogs(runIdArg?: string, options?: { plain?: boolean; ve
   }
 
   const cwd = process.cwd();
+  const config = loadConfig(findConfigFile(cwd) || undefined);
   let targetRunId: number | null = null;
 
   if (runIdArg) {
@@ -34,7 +36,7 @@ export async function runLogs(runIdArg?: string, options?: { plain?: boolean; ve
   if (!targetRunId) {
     // Fallback: list latest run
     try {
-      const runs = await ghClient.listWorkflowRuns('cloudipa-build.yml', 1, cwd);
+      const runs = await ghClient.listWorkflowRuns(config.github.workflow, 1, cwd);
       if (runs.length > 0) {
         targetRunId = runs[0].databaseId;
       }

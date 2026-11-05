@@ -27,7 +27,7 @@ export const DEFAULT_CONFIG: CloudIPAConfig = {
 
 export function validateAndNormalizeConfig(raw: any): CloudIPAConfig {
   if (!raw || typeof raw !== 'object') {
-    return { ...DEFAULT_CONFIG };
+    return structuredClone(DEFAULT_CONFIG);
   }
 
   const project = raw.project || {};

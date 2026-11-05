@@ -30,11 +30,15 @@ export async function runDownload(
   }
 
   const lastBuildPath = path.join(cwd, LAST_BUILD_FILE);
-  if (!targetRunId && fs.existsSync(lastBuildPath)) {
+  if (fs.existsSync(lastBuildPath)) {
     try {
       const lastBuild: LastBuildRecord = JSON.parse(fs.readFileSync(lastBuildPath, 'utf8'));
-      targetRunId = lastBuild.runId;
-      requestId = lastBuild.requestId;
+      if (!targetRunId) {
+        targetRunId = lastBuild.runId;
+        requestId = lastBuild.requestId;
+      } else if (lastBuild.runId === targetRunId) {
+        requestId = lastBuild.requestId;
+      }
     } catch (err: any) {
       logger.warn(`Could not read ${LAST_BUILD_FILE}: ${err.message}`);
     }

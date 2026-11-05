@@ -35,6 +35,13 @@ describe('CLI Structure & Command Definitions', () => {
     expect(options).toContain('--timeout');
     expect(options).toContain('--allow-dirty-remote');
     expect(options).toContain('--no-wait');
+
+    // Destructive defaults must not be present so .cloudipa.yml isn't silently overwritten
+    const findOption = (name: string) => buildCmd!.options.find((o) => o.long === name);
+    expect(findOption('--configuration')?.defaultValue).toBeUndefined();
+    expect(findOption('--runner')?.defaultValue).toBeUndefined();
+    expect(findOption('--xcode')?.defaultValue).toBeUndefined();
+    expect(findOption('--timeout')?.defaultValue).toBeUndefined();
   });
 
   it('supports global --plain and --verbose flags', () => {

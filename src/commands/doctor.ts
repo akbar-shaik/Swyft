@@ -3,6 +3,7 @@ import path from 'path';
 import { runCommand, checkBinaryAvailable } from '../utils/exec';
 import { gitClient } from '../git/git-client';
 import { ghClient } from '../github/gh-client';
+import { loadConfig, findConfigFile } from '../config/loader';
 import { logger } from '../utils/logger';
 import { DoctorCheckResult } from '../types';
 
@@ -162,20 +163,21 @@ export async function runDoctor(options?: { plain?: boolean; verbose?: boolean }
   }
 
   // 7. Workflow File Check
-  const workflowPath = path.join(cwd, '.github', 'workflows', 'cloudipa-build.yml');
+  const config = loadConfig(findConfigFile(cwd) || undefined);
+  const workflowPath = path.join(cwd, '.github', 'workflows', config.github.workflow);
   if (fs.existsSync(workflowPath)) {
     results.push({
       id: 'workflow-file',
       title: 'CloudIPA Workflow Template',
       status: 'PASS',
-      message: '.github/workflows/cloudipa-build.yml exists',
+      message: `.github/workflows/${config.github.workflow} exists`,
     });
   } else {
     results.push({
       id: 'workflow-file',
       title: 'CloudIPA Workflow Template',
       status: 'WARN',
-      message: 'Workflow file .github/workflows/cloudipa-build.yml not found in repository.',
+      message: `Workflow file .github/workflows/${config.github.workflow} not found in repository.`,
       fix: 'Run "cloudipa init" to generate and commit the GitHub Actions build workflow.',
     });
   }
