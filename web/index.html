@@ -501,6 +501,9 @@
 
         <div style="display: flex; align-items: center; gap: 14px;">
           <div class="badge-pill">Apple Silicon macOS-15 Engine</div>
+          <button id="cloudSetupBtn" onclick="openGitHubSettings()" class="copy-btn" style="display:none; color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.3);">
+            ⚙️ Cloud Setup
+          </button>
           <button id="logoutBtn" onclick="handleLogout()" class="copy-btn" style="display:none;">Log Out</button>
         </div>
       </div>
@@ -543,6 +546,45 @@
             </div>
 
             <div class="auth-error" id="authErrorMsg"></div>
+          </div>
+        </div>
+
+        <!-- In-App 1-Click GitHub Cloud Setup Modal -->
+        <div class="auth-overlay" id="githubModal" style="display: none;">
+          <div class="auth-box" style="max-width: 480px; text-align: left;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <h3 style="font-size: 1.15rem; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 8px;">
+                ⚡ GitHub Cloud Runner Setup
+              </h3>
+              <button onclick="closeGitHubSettings()" class="copy-btn" style="padding: 4px 10px; cursor: pointer;">✕</button>
+            </div>
+
+            <!-- 1-Click Pre-Selected Permissions Banner -->
+            <div style="background: rgba(0, 240, 255, 0.08); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 14px; padding: 14px 16px; margin-bottom: 18px;">
+              <div style="font-weight: 700; font-size: 0.88rem; color: #fff; margin-bottom: 4px;">🚀 1-Click Token Link:</div>
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; line-height: 1.4;">
+                Click below to open GitHub with the exact required permissions (<strong>repo</strong> & <strong>workflow</strong>) already pre-checked. Just click "Generate" on GitHub and paste it below:
+              </div>
+              <a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=CloudIPA" target="_blank" class="btn btn-primary" style="width: 100%; justify-content: center; font-size: 0.85rem; padding: 10px;">
+                🔑 Open GitHub (Pre-Checked Scopes) ↗
+              </a>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;">GitHub Personal Access Token (Classic or Fine-Grained):</label>
+              <input type="password" id="ghTokenInput" class="auth-input" style="text-align: left; font-size: 0.92rem; padding: 12px 14px; margin-bottom: 0;" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off">
+            </div>
+
+            <div style="margin-bottom: 18px;">
+              <label style="display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;">Target Repository (owner/repo):</label>
+              <input type="text" id="ghRepoInput" class="auth-input" style="text-align: left; font-size: 0.92rem; padding: 12px 14px; margin-bottom: 0;" value="akbar-shaik/CloudIPAAA" placeholder="owner/repo">
+            </div>
+
+            <button class="btn btn-primary" id="btnSaveGitHub" onclick="saveGitHubSettings()" style="width: 100%; padding: 14px;">
+              ⚡ Connect & Auto-Install Workflow
+            </button>
+
+            <div id="ghStatusMsg" style="margin-top: 14px; font-size: 0.85rem; font-weight: 600; text-align: center; display: none;"></div>
           </div>
         </div>
 
@@ -621,6 +663,11 @@
             </div>
             <div id="errorText" style="font-family: var(--mono-font); font-size: 0.88rem; color: #ff8099; margin-top: 4px;"></div>
             <div class="error-fix" id="errorFixText"></div>
+            <div style="margin-top: 14px; text-align: right;">
+              <button class="btn btn-primary" onclick="openGitHubSettings()" style="font-size: 0.85rem; padding: 10px 18px;">
+                ⚡ Open 1-Click Cloud Setup Assistant
+              </button>
+            </div>
           </div>
         </div>
 
@@ -677,13 +724,97 @@
       const token = getSessionToken();
       if (token) {
         document.getElementById('authModal').style.display = 'none';
+        document.getElementById('cloudSetupBtn').style.display = 'inline-flex';
         document.getElementById('logoutBtn').style.display = 'inline-flex';
+        checkGitHubStatus();
       } else {
         document.getElementById('authModal').style.display = 'flex';
+        document.getElementById('cloudSetupBtn').style.display = 'none';
         document.getElementById('logoutBtn').style.display = 'none';
       }
     }
     window.addEventListener('DOMContentLoaded', checkAuthOnLoad);
+
+    function openGitHubSettings() {
+      document.getElementById('githubModal').style.display = 'flex';
+      document.getElementById('ghStatusMsg').style.display = 'none';
+    }
+
+    function closeGitHubSettings() {
+      document.getElementById('githubModal').style.display = 'none';
+    }
+
+    async function checkGitHubStatus() {
+      try {
+        const token = getSessionToken();
+        const res = await fetch('/api/settings/github/status', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.repo) document.getElementById('ghRepoInput').value = data.repo;
+          if (!data.configured || !data.workflowInstalled) {
+            document.getElementById('cloudSetupBtn').innerHTML = '⚙️ Cloud Setup <span style="display:inline-block;width:6px;height:6px;background:var(--accent-red);border-radius:50%;margin-left:4px;"></span>';
+          } else {
+            document.getElementById('cloudSetupBtn').innerHTML = '⚙️ Cloud Setup <span style="display:inline-block;width:6px;height:6px;background:var(--accent-green);border-radius:50%;margin-left:4px;"></span>';
+          }
+        }
+      } catch (e) {}
+    }
+
+    async function saveGitHubSettings() {
+      const token = document.getElementById('ghTokenInput').value.trim();
+      const repo = document.getElementById('ghRepoInput').value.trim();
+      const msgEl = document.getElementById('ghStatusMsg');
+
+      if (!token) {
+        msgEl.style.color = 'var(--accent-red)';
+        msgEl.textContent = 'Please enter your GitHub Personal Access Token.';
+        msgEl.style.display = 'block';
+        return;
+      }
+
+      const btn = document.getElementById('btnSaveGitHub');
+      btn.textContent = 'Verifying & Installing...';
+      btn.disabled = true;
+      msgEl.style.color = 'var(--accent-cyan)';
+      msgEl.textContent = 'Validating token with GitHub API & installing workflow...';
+      msgEl.style.display = 'block';
+
+      try {
+        const sessionToken = getSessionToken();
+        const res = await fetch('/api/settings/github', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${sessionToken}`,
+          },
+          body: JSON.stringify({ token, repo }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to configure GitHub');
+        }
+
+        msgEl.style.color = 'var(--accent-green)';
+        msgEl.textContent = '🎉 ' + data.message;
+        btn.textContent = 'Connected & Installed!';
+        checkGitHubStatus();
+
+        setTimeout(() => {
+          closeGitHubSettings();
+          btn.textContent = '⚡ Connect & Auto-Install Workflow';
+          btn.disabled = false;
+        }, 1800);
+
+      } catch (err) {
+        msgEl.style.color = 'var(--accent-red)';
+        msgEl.textContent = err.message;
+        btn.textContent = 'Retry Setup';
+        btn.disabled = false;
+      }
+    }
 
     function showAuthError(msg) {
       const errEl = document.getElementById('authErrorMsg');
@@ -764,7 +895,9 @@
 
         sessionStorage.setItem('cloudipa_auth_token', data.token);
         document.getElementById('authModal').style.display = 'none';
+        document.getElementById('cloudSetupBtn').style.display = 'inline-flex';
         document.getElementById('logoutBtn').style.display = 'inline-flex';
+        checkGitHubStatus();
 
       } catch (err) {
         showAuthError(err.message);
@@ -787,7 +920,9 @@
       document.getElementById('cred2Input').value = '';
       resetToCred1();
       document.getElementById('authModal').style.display = 'flex';
+      document.getElementById('cloudSetupBtn').style.display = 'none';
       document.getElementById('logoutBtn').style.display = 'none';
+      closeGitHubSettings();
     }
 
     // Allow Enter key in inputs

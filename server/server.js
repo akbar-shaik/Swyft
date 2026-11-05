@@ -33,8 +33,8 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://ios.akbr.in').r
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.HMAC_SECRET || 'cloudipa-secure-auth-secret-key-salt-2026';
 const HMAC_SECRET = process.env.HMAC_SECRET || AUTH_SECRET;
 const API_AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
-const SERVER_GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
-const SERVER_GITHUB_REPO = process.env.GITHUB_REPO || 'akbar-shaik/CloudIPAAA';
+let SERVER_GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+let SERVER_GITHUB_REPO = process.env.GITHUB_REPO || 'akbar-shaik/CloudIPAAA';
 
 // Telegram Bot & User Configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '1858623580:AAFiBK43EXj0e2cGkiXZL1ui-DCxtdjlR_A';
@@ -352,6 +352,195 @@ app.get('/api/uploads/:requestId', (req, res) => {
 });
 
 // --- Protected Endpoints (requireAuth) ---
+
+// GET /api/settings/github/status
+app.get('/api/settings/github/status', requireAuth, async (req, res) => {
+  const currentToken = SERVER_GITHUB_TOKEN;
+  const currentRepo = SERVER_GITHUB_REPO;
+
+  if (!currentToken || !currentRepo) {
+    return res.json({
+      configured: false,
+      repo: currentRepo || '',
+      workflowInstalled: false,
+    });
+  }
+
+  try {
+    const wfResp = await fetch(`https://api.github.com/repos/${currentRepo}/contents/.github/workflows/cloudipa-build.yml`, {
+      headers: {
+        'Authorization': `Bearer ${currentToken}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+      },
+    });
+
+    res.json({
+      configured: true,
+      repo: currentRepo,
+      workflowInstalled: wfResp.ok,
+    });
+  } catch (err) {
+    res.json({
+      configured: true,
+      repo: currentRepo,
+      workflowInstalled: false,
+      error: err.message,
+    });
+  }
+});
+
+// POST /api/settings/github (1-Click GitHub Connect & Auto-Install Workflow)
+app.post('/api/settings/github', requireAuth, async (req, res) => {
+  try {
+    const { token, repo } = req.body || {};
+    const effectiveToken = (token || SERVER_GITHUB_TOKEN || '').trim();
+    const effectiveRepo = (repo || SERVER_GITHUB_REPO || '').trim();
+
+    if (!effectiveToken) {
+      return res.status(400).json({ error: 'GitHub Personal Access Token is required.' });
+    }
+    if (!REPO_REGEX.test(effectiveRepo)) {
+      return res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo".' });
+    }
+
+    // Step 1: Verify token authentication and identity
+    const userResp = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${effectiveToken}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+      },
+    });
+
+    if (!userResp.ok) {
+      const err = await userResp.json().catch(() => ({}));
+      return res.status(401).json({ error: `GitHub Authentication Failed (${userResp.status}): ${err.message || 'Invalid Token'}` });
+    }
+
+    const userData = await userResp.json();
+
+    // Step 2: Verify repository access
+    const repoResp = await fetch(`https://api.github.com/repos/${effectiveRepo}`, {
+      headers: {
+        'Authorization': `Bearer ${effectiveToken}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+      },
+    });
+
+    if (!repoResp.ok) {
+      const err = await repoResp.json().catch(() => ({}));
+      return res.status(404).json({ error: `Repository '${effectiveRepo}' not accessible (${repoResp.status}): ${err.message || 'Check repository name or permissions'}` });
+    }
+
+    // Step 3: Check and Install .github/workflows/cloudipa-build.yml
+    const candidatePaths = [
+      path.join(__dirname, '..', 'templates', 'cloudipa-build.yml'),
+      path.join(__dirname, 'templates', 'cloudipa-build.yml'),
+      path.join(__dirname, '..', '.github', 'workflows', 'cloudipa-build.yml'),
+      path.join(__dirname, 'cloudipa-build.yml'),
+    ];
+
+    let workflowContent = '';
+    for (const cp of candidatePaths) {
+      if (fs.existsSync(cp)) {
+        workflowContent = fs.readFileSync(cp, 'utf8');
+        break;
+      }
+    }
+
+    if (!workflowContent) {
+      return res.status(500).json({ error: 'Local workflow template file not found on server.' });
+    }
+
+    // Check if workflow file already exists to get its SHA for update
+    let existingSha = null;
+    const checkFileResp = await fetch(`https://api.github.com/repos/${effectiveRepo}/contents/.github/workflows/cloudipa-build.yml`, {
+      headers: {
+        'Authorization': `Bearer ${effectiveToken}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+      },
+    });
+
+    if (checkFileResp.ok) {
+      const fileData = await checkFileResp.json();
+      existingSha = fileData.sha;
+    }
+
+    // Commit file via GitHub REST API
+    const putBody = {
+      message: 'ci: add CloudIPA iOS Build workflow for macOS runners',
+      content: Buffer.from(workflowContent, 'utf8').toString('base64'),
+    };
+    if (existingSha) {
+      putBody.sha = existingSha;
+    }
+
+    const putResp = await fetch(`https://api.github.com/repos/${effectiveRepo}/contents/.github/workflows/cloudipa-build.yml`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${effectiveToken}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'CloudIPA',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(putBody),
+    });
+
+    if (!putResp.ok) {
+      const err = await putResp.json().catch(() => ({}));
+      return res.status(putResp.status).json({
+        error: `Failed to commit workflow to GitHub (${putResp.status}): ${err.message || 'Ensure token has "workflow" or "Workflows: Read and write" permission.'}`,
+      });
+    }
+
+    // Step 4: Update runtime variables & persist to .env
+    SERVER_GITHUB_TOKEN = effectiveToken;
+    SERVER_GITHUB_REPO = effectiveRepo;
+
+    try {
+      const envPath = path.join(__dirname, '.env');
+      let currentEnv = '';
+      if (fs.existsSync(envPath)) currentEnv = fs.readFileSync(envPath, 'utf8');
+
+      const lines = currentEnv.split('\n');
+      let hasToken = false;
+      let hasRepo = false;
+      const updatedLines = lines.map(line => {
+        if (line.startsWith('GITHUB_TOKEN=')) {
+          hasToken = true;
+          return `GITHUB_TOKEN=${effectiveToken}`;
+        }
+        if (line.startsWith('GITHUB_REPO=')) {
+          hasRepo = true;
+          return `GITHUB_REPO=${effectiveRepo}`;
+        }
+        return line;
+      });
+
+      if (!hasToken) updatedLines.push(`GITHUB_TOKEN=${effectiveToken}`);
+      if (!hasRepo) updatedLines.push(`GITHUB_REPO=${effectiveRepo}`);
+
+      fs.writeFileSync(envPath, updatedLines.join('\n').trim() + '\n', 'utf8');
+    } catch (e) {
+      console.warn('Failed to persist .env on disk:', e.message);
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully connected as @${userData.login}! Workflow installed into '${effectiveRepo}'.`,
+      repo: effectiveRepo,
+      user: userData.login,
+      workflowInstalled: true,
+    });
+
+  } catch (err) {
+    console.error('Error configuring GitHub:', err);
+    res.status(500).json({ error: err.message || 'Internal error setting up GitHub.' });
+  }
+});
 
 // GET /api/build/:id (Status polling with real-time telemetry)
 app.get('/api/build/:id', requireAuth, (req, res) => {

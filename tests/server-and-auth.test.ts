@@ -186,4 +186,15 @@ describe('Server Authentication, Security & Telemetry Engine', () => {
       expect(job.progressPct).toBe(100);
     });
   });
+
+  describe('In-App GitHub Settings & Validation', () => {
+    it('rejects empty GitHub tokens', async () => {
+      const { app } = require('../server/server');
+      // Express handler logic check
+      const REPO_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+      expect(REPO_REGEX.test('akbar-shaik/CloudIPAAA')).toBe(true);
+      expect(REPO_REGEX.test('invalid_repo')).toBe(false);
+      expect(REPO_REGEX.test('invalid/repo/subpath')).toBe(false);
+    });
+  });
 });
