@@ -547,7 +547,7 @@
         </div>
 
         <!-- Studio Dropzone -->
-        <div class="dropzone" id="dropzone" onclick="triggerFolderSelect()">
+        <div class="dropzone" id="dropzone" onclick="triggerFolderSelect(event)">
           <div class="dropzone-icon">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -559,11 +559,11 @@
           <p class="dropzone-desc">Select your root Xcode project containing .xcodeproj or .xcworkspace</p>
           
           <div class="picker-btn-group" onclick="event.stopPropagation()">
-            <button class="btn btn-primary" onclick="triggerFolderSelect()">
+            <button type="button" class="btn btn-primary" onclick="triggerFolderSelect(event)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
               Select Project Folder
             </button>
-            <button class="btn btn-secondary" onclick="triggerZipSelect()">
+            <button type="button" class="btn btn-secondary" onclick="triggerZipSelect(event)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
               Upload Project .ZIP
             </button>
@@ -795,12 +795,28 @@
       if (e.key === 'Enter') submitCred2();
     });
 
-    function triggerFolderSelect() {
-      document.getElementById('folderInput').click();
+    function triggerFolderSelect(e) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      const el = document.getElementById('folderInput');
+      if (el) {
+        el.value = '';
+        el.click();
+      }
     }
 
-    function triggerZipSelect() {
-      document.getElementById('zipInput').click();
+    function triggerZipSelect(e) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      const el = document.getElementById('zipInput');
+      if (el) {
+        el.value = '';
+        el.click();
+      }
     }
 
     // Recursive directory drag and drop handler
@@ -1045,18 +1061,6 @@
 
         } catch (e) {
           console.warn('Status poll glitch:', e);
-          consecutiveErrors++;
-          if (consecutiveErrors >= 3) {
-            clearInterval(timerInterval);
-            alert('Network connection lost while tracking build.');
-          } else {
-            setTimeout(poll, 4000);
-          }
-        }
-      };
-
-      setTimeout(poll, 2000);
-    }
           consecutiveErrors++;
           if (consecutiveErrors >= 3) {
             clearInterval(timerInterval);
