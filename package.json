@@ -1,0 +1,48 @@
+{
+  "name": "cloudipa",
+  "version": "1.0.0",
+  "description": "Cross-platform CLI tool to compile iOS projects into unsigned .ipa packages using GitHub-hosted macOS runners",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cloudipa": "./bin/cloudipa.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node bin/cloudipa.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "ios",
+    "ipa",
+    "github-actions",
+    "xcode",
+    "cli",
+    "cross-platform",
+    "unsigned-ipa",
+    "sideload"
+  ],
+  "author": "CloudIPA Authors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.14",
+    "commander": "^12.1.0",
+    "yaml": "^2.4.5"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.0"
+  }
+}
